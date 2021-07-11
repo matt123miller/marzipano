@@ -19,10 +19,11 @@ var Layer = require('./Layer');
 var TextureStore = require('./TextureStore');
 var HotspotContainer = require('./HotspotContainer');
 var eventEmitter = require('minimal-event-emitter');
-var clock = require('./util/clock');
+var now = require('./util/now');
 var noop = require('./util/noop');
 var type = require('./util/type');
 var defaults = require('./util/defaults');
+var clearOwnProperties = require('./util/clearOwnProperties');
 
 /**
  * Signals that the scene's view has changed. See {@link View#event:change}.
@@ -35,11 +36,12 @@ var defaults = require('./util/defaults');
  */
 
 /**
- * @class
+ * @class Scene
  * @classdesc
- * A {@link Scene} is a stack of {@link Layer layers} sharing the same
- * {@link View view} and {@link HotspotContainer hotspot container}. It belongs
- * to the {@link Viewer viewer} inside which it is displayed.
+ *
+ * A Scene is a stack of {@link Layer layers} sharing the same {@link View view}
+ * and {@link HotspotContainer hotspot container}. It belongs to the
+ * {@link Viewer viewer} inside which it is displayed.
  *
  * Clients should call {@link Viewer#createScene} instead of invoking the
  * constructor directly.
@@ -100,11 +102,7 @@ Scene.prototype.destroy = function() {
 
   this.destroyAllLayers();
 
-  this._movement = null;
-  this._viewer = null;
-  this._layers = null;
-  this._view = null;
-  this._hotspotContainer = null;
+  clearOwnProperties(this);
 };
 
 
@@ -192,8 +190,8 @@ Scene.prototype.createLayer = function(opts) {
   var geometry = opts.geometry;
   var view = this._view;
   var stage = this._viewer.stage();
-  var textureStore = new TextureStore(geometry, source, stage, textureStoreOpts);
-  var layer = new Layer(stage, source, geometry, view, textureStore, layerOpts);
+  var textureStore = new TextureStore(source, stage, textureStoreOpts);
+  var layer = new Layer(source, geometry, view, textureStore, layerOpts);
 
   this._layers.push(layer);
 
@@ -257,6 +255,9 @@ Scene.prototype.switchTo = function(opts, done) {
  *
  * @param {Object} params Target view parameters.
  * @param {Object} opts Transition options.
+ * @param {function} [opts.ease=easeInOutQuad] Tween easing function
+ * @param {number} [opts.controlsInterrupt=false] allow controls to interrupt
+ *     an ongoing tween.
  * @param {number} [opts.transitionDuration=1000] Tween duration, in
  *     milliseconds.
  * @param {number} [opts.closest=true] Whether to tween through the shortest
@@ -267,8 +268,8 @@ Scene.prototype.switchTo = function(opts, done) {
  *    interrupted.
  */
 Scene.prototype.lookTo = function(params, opts, done) {
-  // TODO: allow controls to interrupt an ongoing tween.
-  // TODO: provide a way to override the easing function.
+  var self = this;
+
   opts = opts || {};
   done = done || noop;
 
@@ -276,6 +277,16 @@ Scene.prototype.lookTo = function(params, opts, done) {
     throw new Error("Target view parameters must be an object");
   }
 
+  // Quadratic in/out easing.
+  var easeInOutQuad = function (k) {
+    if ((k *= 2) < 1) {
+      return 0.5 * k * k;
+    }
+    return -0.5 * (--k * (k - 2) - 1);
+  };
+
+  var ease = opts.ease != null ? opts.ease : easeInOutQuad;
+  var controlsInterrupt = opts.controlsInterrupt != null ? opts.controlsInterrupt : false;
   var duration = opts.transitionDuration != null ? opts.transitionDuration : 1000;
   var shortest = opts.shortest != null ? opts.shortest : true;
 
@@ -292,14 +303,6 @@ Scene.prototype.lookTo = function(params, opts, done) {
   if (shortest && view.normalizeToClosest) {
     view.normalizeToClosest(finalParams, finalParams);
   }
-
-  // Quadratic in/out easing.
-  var ease = function (k) {
-    if ((k *= 2) < 1) {
-      return 0.5 * k * k;
-    }
-    return -0.5 * (--k * (k - 2) - 1);
-  };
 
   var movement = function() {
 
@@ -326,12 +329,15 @@ Scene.prototype.lookTo = function(params, opts, done) {
     };
   };
 
-  var controlsEnabled = this._viewer.controls().enabled();
+  var reenableControls = this._viewer.controls().enabled();
 
-  this._viewer.controls().disable();
+  if (!controlsInterrupt) {
+    this._viewer.controls().disable();
+  }
+
   this.startMovement(movement, function() {
-    if(controlsEnabled) {
-      this._viewer.controls().enable();
+    if (reenableControls) {
+      self._viewer.controls().enable();
     }
     done();
   });
@@ -340,7 +346,7 @@ Scene.prototype.lookTo = function(params, opts, done) {
 
 
 /**
- * Starts a movement.
+ * Starts a movement, possibly replacing the current movement.
  *
  * @param {function} fn The movement function.
  * @param {function} done Function to be called when the movement finishes or is
@@ -361,7 +367,7 @@ Scene.prototype.startMovement = function(fn, done) {
 
   this._movement = fn;
   this._movementStep = step;
-  this._movementStartTime = clock();
+  this._movementStartTime = now();
   this._movementParams = {};
   this._movementCallback = done;
 
@@ -375,19 +381,26 @@ Scene.prototype.startMovement = function(fn, done) {
  */
 Scene.prototype.stopMovement = function() {
 
+  var done = this._movementCallback;
   var renderLoop = this._viewer.renderLoop();
 
-  if (this._movementCallback) {
-    this._movementCallback();
+  if (!this._movement) {
+    return;
   }
 
-  renderLoop.removeEventListener('beforeRender', this._updateMovementHandler);
-
+  // Clear state before calling done, to prevent an infinite loop when the
+  // callback starts a new movement.
   this._movement = null;
   this._movementStep = null;
   this._movementStartTime = null;
   this._movementParams = null;
   this._movementCallback = null;
+
+  renderLoop.removeEventListener('beforeRender', this._updateMovementHandler);
+
+  if (done) {
+    done();
+  }
 };
 
 
@@ -409,7 +422,7 @@ Scene.prototype._updateMovement = function() {
   var renderLoop = this._viewer.renderLoop();
   var view = this._view;
 
-  var elapsed = clock() - this._movementStartTime;
+  var elapsed = now() - this._movementStartTime;
   var step = this._movementStep;
   var params = this._movementParams;
 

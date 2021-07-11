@@ -15,44 +15,8 @@
  */
 'use strict';
 
-// Get DOM elements.
-var dropdownElement = document.getElementById('dropdown');
-var reloadElement = document.getElementById('reload');
-var statusElement = document.getElementById('status');
-
-// Reload for the specified stage type when button is clicked.
-reloadElement.addEventListener('click', function() {
-  var type = dropdownElement.value;
-  var url = window.location.href.replace(/^[^ \?]*(\?.*)?$/, '?' + type);
-  window.location.href = url;
-});
-
-// Map each stage type into the corresponding stage class.
-var stageMap = {
-  webgl: Marzipano.WebGlStage,
-  css: Marzipano.CssStage,
-  flash: Marzipano.FlashStage
-};
-
-// Get the stage type under test from the query string.
-var stageType = window.location.search.replace('?', '') || 'webgl';
-
-// Get the stage class for the specified stage type.
-var StageClass = stageMap[stageType] || WebGlStage;
-
-// Warn user if the selected stage type is unsupported.
-if (!StageClass.supported()) {
-  statusElement.innerHTML = "Unsupported stage type.";
-}
-
-// Select the type under test on the dropdown list.
-dropdownElement.value = stageType;
-
-// Let the user know the test is loading.
-statusElement.innerHTML = "Loading, please wait...";
-
-// Create a stage of the specified type and register the default renderers.
-var stage = new StageClass();
+// Create a stage and register the default renderers.
+var stage = new Marzipano.WebGlStage();
 Marzipano.registerDefaultRenderers(stage);
 
 // Set up view.
@@ -67,9 +31,9 @@ var geometryBelow = new Marzipano.CubeGeometry(levelsBelow);
 var sourceBelow = new Marzipano.ImageUrlSource(function(tile) {
   return { url: "//www.marzipano.net/media/pixels/red.png" };
 });
-var textureStoreBelow = new Marzipano.TextureStore(geometryBelow, sourceBelow, stage);
-var layerBelow = new Marzipano.Layer(stage, sourceBelow, geometryBelow, view,
-                                     textureStoreBelow, { effects: { opacity: 1 } });
+var textureStoreBelow = new Marzipano.TextureStore(sourceBelow, stage);
+var layerBelow = new Marzipano.Layer(
+    sourceBelow, geometryBelow, view, textureStoreBelow, { effects: { opacity: 1 } });
 
 // Set up the top layer.
 var levelsAbove = [512, 1024, 2048, 4096].map(function(size) {
@@ -80,9 +44,9 @@ var sourceAbove = new Marzipano.ImageUrlSource(function(tile) {
   return { url: "//www.marzipano.net/media/generated-tiles/" +
     tile.z + '_' + tile.face + '_' + tile.x + '_' + tile.y + '.png' };
 });
-var textureStoreAbove = new Marzipano.TextureStore(geometryAbove, sourceAbove, stage);
-var layerAbove = new Marzipano.Layer(stage, sourceAbove, geometryAbove, view,
-                                     textureStoreAbove, { effects: { opacity: 0.6 } });
+var textureStoreAbove = new Marzipano.TextureStore(sourceAbove, stage);
+var layerAbove = new Marzipano.Layer(
+    sourceAbove, geometryAbove, view, textureStoreAbove, { effects: { opacity: 0.6 } });
 
 // Add layers to stage.
 stage.addLayer(layerBelow);
@@ -104,17 +68,17 @@ layerAbove.setFixedLevel(2);
 // List of tiles to be preloaded.
 var preloadTiles = [
   // Level 1 tile on top right of front face (parent fallback).
-  new Marzipano.CubeGeometry.TileClass('f', 1, 0, 1, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 1, 0, 1, geometryAbove),
   // Level 2 tile on bottom right of front face (intended display level).
-  new Marzipano.CubeGeometry.TileClass('f', 3, 2, 2, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 3, 2, 2, geometryAbove),
   // Level 3 tiles on bottom right of front face (children fallback).
-  new Marzipano.CubeGeometry.TileClass('f', 6, 6, 3, geometryAbove),
-  new Marzipano.CubeGeometry.TileClass('f', 6, 7, 3, geometryAbove),
-  new Marzipano.CubeGeometry.TileClass('f', 7, 6, 3, geometryAbove),
-  new Marzipano.CubeGeometry.TileClass('f', 7, 7, 3, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 6, 6, 3, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 6, 7, 3, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 7, 6, 3, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 7, 7, 3, geometryAbove),
   // Level 3 tiles on bottom right of front face (incomplete children fallback).
-  new Marzipano.CubeGeometry.TileClass('f', 4, 4, 3, geometryAbove),
-  new Marzipano.CubeGeometry.TileClass('f', 4, 5, 3, geometryAbove)
+  new Marzipano.CubeGeometry.Tile('f', 4, 4, 3, geometryAbove),
+  new Marzipano.CubeGeometry.Tile('f', 4, 5, 3, geometryAbove)
 ];
 
 // Pin tiles to force them to load.
@@ -138,7 +102,6 @@ var checkInterval = 200;
 setTimeout(function check() {
   if (ready()) {
     stage.render();
-    statusElement.innerHTML = "";
   } else {
     setTimeout(check, checkInterval);
   }

@@ -16,11 +16,12 @@
 'use strict';
 
 var eventEmitter = require('minimal-event-emitter');
+var mat4 = require('gl-matrix').mat4;
+var vec4 = require('gl-matrix').vec4;
 var pixelRatio = require('../util/pixelRatio');
 var real = require('../util/real');
 var clamp = require('../util/clamp');
-var mat4 = require('gl-matrix/src/gl-matrix/mat4');
-var vec4 = require('gl-matrix/src/gl-matrix/vec4');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 // Default viewport dimensions.
 // Start with zero to ensure that those values are handled correctly.
@@ -50,43 +51,77 @@ var planeCmp = [
 ];
 
 // A zoom of exactly 0 breaks some computations, so we force a minimum positive
-// value. We use 9 decimal places for the epsilon value since this is the
-// maximum number of significant digits for a 32-bit floating-point number.
-// Note that after a certain zoom level, rendering quality will be affected
-// by the loss of precision in floating-point computations.
-var zoomLimitEpsilon = 0.000000001;
+// value. We use 6 decimal places for the epsilon value to avoid broken
+// rendering due to loss of precision in floating point computations.
+var zoomLimitEpsilon = 0.000001;
 
 
 /**
- * @class
- * @classdesc A view implementing an orthogonal projection for flat images.
+ * @interface FlatViewParams
+ *
+ * A camera configuration for a {@link FlatView}.
+ *
+ * @property {number} x The horizontal coordinate of the image point displayed
+ *     at the viewport center, in the [0, 1] range.
+ *     When `x === 0.5`, the image is centered horizontally.
+ *     When `x === 0`, the left edge of the image is at the viewport center.
+ *     When `x === 1`, the right edge of the image is at the viewport center.
+ * @property {number} y The vertical coordinate of the image point displayed at
+ *     the viewport center, in the [0, 1] range.
+ *     When `y === 0.5`, the image is centered vertically.
+ *     When `y === 0`, the top edge of the image is at the viewport center.
+ *     When `y === 1`, the bottom edge of the image is at the viewport center.
+ * @property {number} zoom The horizontal zoom, in the [0, ∞) range.
+ *     When `zoom === 1`, the viewport is as wide as the image.
+ *     When `zoom < 1`, the image is zoomed in.
+ *     When `zoom > 1`, the image is zoomed out.
+ * @property {number} mediaAspectRatio The image aspect ratio.
+ *     When `mediaAspectRatio === 1`, the image width equals its height.
+ *     When `mediaAspectRatio < 1`, the image width is less than its height.
+ *     When `mediaAspectRatio > 1`, the image height is less than its width.
+ */
+
+
+/**
+ * @interface FlatViewCoords
+ *
+ * The position of a point in a flat image.
+ *
+ * @property {number} x The horizontal coordinate, in the [0, 1] range.
+ * @property {number} y The vertical coordinate, in the [0, 1] range.
+ */
+
+
+/**
+ * @typedef {function} FlatViewLimiter
+ *
+ * View limiter for a {@link FlatView}.
+ *
+ * A view limiter is a function that receives a {@link FlatViewParams} object,
+ * optionally modifies it in place, and returns it. It can be used to enforce
+ * constraints on the view parameters.
+ *
+ * See {@link FlatView.limit} for commonly used limiters. They may be composed
+ * together or with user-defined limiters with {@link util.compose}.
+ *
+ * @param {FlatViewParams} params
+ * @return {FlatViewParams}
+ */
+
+
+/**
+ * @class FlatView
  * @implements View
+ * @classdesc
  *
- * @param {Object} params the initial view parameters.
+ * A {@link View} implementing an orthogonal projection for flat images.
  *
- * @param {number} params.mediaAspectRatio image aspect ratio.
- * When `mediaAspectRatio === 1`, the image width equals its height.
- * When `mediaAspectRatio < 1`, the image width is less than its height.
- * When `mediaAspectRatio > 1`, the image height is less than its width.
- *
- * @param {number} [params.x=0.5] horizontal coordinate of the image point at
- * the viewport center, in the [0, 1] range.
- * When `x === 0.5`, the image is centered horizontally.
- * When `x === 0`, the left edge of the image is at the viewport center.
- * When `x === 1`, the right edge of the image is at the viewport center.
- *
- * @param {number} [params.y=0.5] vertical coordinate of the image point at
- * the viewport center, in the [0, 1] range.
- * When `y === 0.5`, the image is centered vertically.
- * When `y === 0`, the top edge of the image is at the viewport center.
- * When `y === 1`, the bottom edge of the image is at the viewport center.
- *
- * @param {number} [params.zoom=1] the horizontal zoom, in the [0, ∞] range.
- * When `zoom === 1`, the image is exactly as wide as the viewport.
- * when `zoom < 1`, the image is zoomed in.
- * when `zoom > 1`, the image is zoomed out.
- *
- * @param {Function} limiter the view limiting function.
+ * @param {FlatViewParams} params The initial view parameters. The
+ *     `mediaAspectRatio` parameter must always be set. The other parameters
+ *     default to `{x: 0.5, y: 0.5, z: 1 }` if unspecified.
+ * @param {FlatViewLimiter=} limiter The view limiter. If unspecified, no view
+ *     limiting is applied. See {@link FlatView.limit} for commonly used
+ *     limiters.
  */
 function FlatView(params, limiter) {
   // Require an aspect ratio to be specified.
@@ -107,24 +142,24 @@ function FlatView(params, limiter) {
   // The initial value for the view limiter.
   this._limiter = limiter || null;
 
+  // The last calculated projection matrix and its inverse.
+  this._projMatrix = mat4.create();
+  this._invProjMatrix = mat4.create();
+
   // The last calculated view frustum.
-  this._viewFrustum = [
+  this._frustum = [
     0, // top
     0, // right
     0, // bottom
     0  // left
   ];
 
-  // The last calculated projection matrix.
-  this._projectionMatrix = mat4.create();
-
-  // Whether the projection matrix needs to be updated.
+  // Whether the projection matrices and view frustum need to be updated.
   this._projectionChanged = true;
 
   // Temporary variables used for calculations.
   this._params = {};
-  this._vertex = vec4.create();
-  this._invProj = mat4.create();
+  this._vec = vec4.create();
 
   // Force view limiting on initial parameters.
   this._update();
@@ -137,19 +172,7 @@ eventEmitter(FlatView);
  * Destructor.
  */
 FlatView.prototype.destroy = function() {
-  this._x = null;
-  this._y = null;
-  this._zoom = null;
-  this._mediaAspectRatio = null;
-  this._width = null;
-  this._height = null;
-  this._limiter = null;
-  this._viewFrustum = null;
-  this._projectionMatrix = null;
-  this._projectionChanged = null;
-  this._params = null;
-  this._vertex = null;
-  this._invProj = null;
+  clearOwnProperties(this);
 };
 
 
@@ -208,44 +231,38 @@ FlatView.prototype.height = function() {
 
 
 /**
- * Get the viewport dimensions. If an object argument is supplied, the object
- * is filled in with the result and returned. Otherwise, a fresh object is
- * returned.
- * @return {Object} obj
- * @return {number} obj.width
- * @return {number} obj.height
+ * Get the viewport dimensions. If an argument is supplied, it is filled in with
+ * the result and returned. Otherwise, a fresh object is filled in and returned.
+ * @param {Size=} size
+ * @return {Size}
  */
-FlatView.prototype.size = function(obj) {
-  obj = obj || {};
-  obj.width = this._width;
-  obj.height = this._height;
-  return obj;
+FlatView.prototype.size = function(size) {
+  size = size || {};
+  size.width = this._width;
+  size.height = this._height;
+  return size;
 };
 
 
 /**
- * Get the view parameters. If an object argument is supplied, the object is
- * filled in with the result and returned. Otherwise, a fresh object is
- * returned.
- * @return {Object} obj
- * @return {number} obj.x
- * @return {number} obj.y
- * @return {number} obj.zoom
- * @return {number} obj.mediaAspectRatio
+ * Get the view parameters. If an argument is supplied, it is filled in with the
+ * result and returned. Otherwise, a fresh object is filled in and returned.
+ * @param {FlatViewParams=} params
+ * @return {FlatViewParams}
  */
-FlatView.prototype.parameters = function(obj) {
-  obj = obj || {};
-  obj.x = this._x;
-  obj.y = this._y;
-  obj.zoom = this._zoom;
-  obj.mediaAspectRatio = this._mediaAspectRatio;
-  return obj;
+FlatView.prototype.parameters = function(params) {
+  params = params || {};
+  params.x = this._x;
+  params.y = this._y;
+  params.zoom = this._zoom;
+  params.mediaAspectRatio = this._mediaAspectRatio;
+  return params;
 };
 
 
 /**
- * Get the view limiter.
- * @return {Function}
+ * Get the view limiter, or null if unset.
+ * @return {?FlatViewLimiter}
  */
 FlatView.prototype.limiter = function() {
   return this._limiter;
@@ -326,40 +343,33 @@ FlatView.prototype.setMediaAspectRatio = function(mediaAspectRatio) {
 
 /**
  * Set the viewport dimensions.
- * @param {Object} obj
- * @param {number} obj.width
- * @param {number} obj.height
+ * @param {Size} size
  */
-FlatView.prototype.setSize = function(obj) {
+FlatView.prototype.setSize = function(size) {
   this._resetParams();
-  this._params.width = obj.width;
-  this._params.height = obj.height;
+  this._params.width = size.width;
+  this._params.height = size.height;
   this._update(this._params);
 };
 
 
 /**
  * Set the view parameters. Unspecified parameters are left unchanged.
- * @param {Object} obj
- * @param {number} obj.x
- * @param {number} obj.y
- * @param {number} obj.zoom
- * @param {number} obj.mediaAspectRatio
+ * @param {FlatViewParameters} params
  */
-FlatView.prototype.setParameters = function(obj) {
+FlatView.prototype.setParameters = function(params) {
   this._resetParams();
-  var params = this._params;
-  params.x = obj.x;
-  params.y = obj.y;
-  params.zoom = obj.zoom;
-  params.mediaAspectRatio = obj.mediaAspectRatio;
-  this._update(params);
+  this._params.x = params.x;
+  this._params.y = params.y;
+  this._params.zoom = params.zoom;
+  this._params.mediaAspectRatio = params.mediaAspectRatio;
+  this._update(this._params);
 };
 
 
 /**
  * Set the view limiter.
- * @param {Function} limiter
+ * @param {?FlatViewLimiter} limiter The new limiter, or null to unset.
  */
 FlatView.prototype.setLimiter = function(limiter) {
   this._limiter = limiter || null;
@@ -479,13 +489,10 @@ FlatView.prototype.updateWithControlParameters = function(parameters) {
 };
 
 
-/**
- * Compute and return the projection matrix for the current view.
- * @returns {mat4}
- */
-FlatView.prototype.projection = function() {
-
-  var projectionMatrix = this._projectionMatrix;
+FlatView.prototype._updateProjection = function() {
+  var projMatrix = this._projMatrix;
+  var invProjMatrix = this._invProjMatrix;
+  var frustum = this._frustum;
 
   // Recalculate projection matrix when required.
   if (this._projectionChanged) {
@@ -494,37 +501,54 @@ FlatView.prototype.projection = function() {
     var zoomX = this._zoomX();
     var zoomY = this._zoomY();
 
-    // Update view frustum.
-    var frustum = this._viewFrustum;
+    // Recalculate view frustum.
     var top     = frustum[0] = (0.5 - y) + 0.5 * zoomY;
     var right   = frustum[1] = (x - 0.5) + 0.5 * zoomX;
     var bottom  = frustum[2] = (0.5 - y) - 0.5 * zoomY;
     var left    = frustum[3] = (x - 0.5) - 0.5 * zoomX;
 
-    // Recalculate projection matrix.
-    mat4.ortho(projectionMatrix, left, right, bottom, top, -1, 1);
+    // Recalculate projection matrix and its inverse.
+    mat4.ortho(projMatrix, left, right, bottom, top, -1, 1);
+    mat4.invert(invProjMatrix, projMatrix);
+
     this._projectionChanged = false;
   }
+};
 
-  return projectionMatrix;
 
+/**
+ * Returns the projection matrix for the current view.
+ * @returns {mat4}
+ */
+FlatView.prototype.projection = function() {
+  this._updateProjection();
+  return this._projMatrix;
+};
+
+
+/**
+ * Returns the inverse projection matrix for the current view.
+ * @returns {mat4}
+ */
+FlatView.prototype.inverseProjection = function() {
+  this._updateProjection();
+  return this._invProjMatrix;
 };
 
 
 /**
  * Return whether the view frustum intersects the given rectangle.
+ *
  * This function may return false positives, but never false negatives.
  * It is used for frustum culling, i.e., excluding invisible tiles from the
  * rendering process.
- * @param {vec4[]} rectangle
- * @return whether the rectangle intersects the view frustum.
+ *
+ * @param {vec3[]} rectangle The vertices of the rectangle.
  */
 FlatView.prototype.intersects = function(rectangle) {
+  this._updateProjection();
 
-  var frustum = this._viewFrustum;
-
-  // Call projection() for the side effect of updating the frustum.
-  this.projection();
+  var frustum = this._frustum;
 
   // Check whether the rectangle is on the outer side of any of the frustum
   // planes. This is a sufficient condition, though not necessary, for the
@@ -546,7 +570,6 @@ FlatView.prototype.intersects = function(rectangle) {
     }
   }
   return true;
-
 };
 
 
@@ -583,18 +606,16 @@ FlatView.prototype.selectLevel = function(levels) {
 
 
 /**
- * Convert view coordinates into screen position. If a result argument is
- * supplied, the object is filled in with the result and returned. Otherwise,
- * a fresh object is returned.
- * @param {Object} coords
- * @param {number} coords.x
- * @param {number} coords.y
- * @return {Object} result
- * @return {number} result.x
- * @return {number} result.y
+ * Convert view coordinates into screen coordinates. If a result argument is
+ * provided, it is filled in and returned. Otherwise, a fresh object is filled
+ * in and returned.
+ *
+ * @param {FlatViewCoords} coords The view coordinates.
+ * @param {Coords=} result The result argument for the screen coordinates.
+ * @return {Coords}
  */
 FlatView.prototype.coordinatesToScreen = function(coords, result) {
-  var ray = this._vertex;
+  var ray = this._vec;
 
   if (!result) {
     result = {};
@@ -632,19 +653,16 @@ FlatView.prototype.coordinatesToScreen = function(coords, result) {
 
 
 /**
- * Convert screen position into view coordinates. If a result argument is
- * supplied, the object is filled in with the result and returned. Otherwise,
- * a fresh object is returned.
- * @param {Object} screen
- * @param {number} screen.x
- * @param {number} screen.y
- * @return {Object} result
- * @return {number} result.x
- * @return {number} result.y
+ * Convert screen coordinates into view coordinates. If a result argument is
+ * provided, it is filled in with the result and returned. Otherwise, a fresh
+ * object is filled in and returned.
+ *
+ * @param {Coords} coords The screen coordinates.
+ * @param {FlatViewCoords=} result The result argument for the view coordinates.
+ * @return {FlatViewCoords}
  */
-FlatView.prototype.screenToCoordinates = function(screen, result) {
-  var ray = this._vertex;
-  var invProj = this._invProj;
+FlatView.prototype.screenToCoordinates = function(coords, result) {
+  var ray = this._vec;
 
   if (!result) {
     result = {};
@@ -653,17 +671,13 @@ FlatView.prototype.screenToCoordinates = function(screen, result) {
   var width = this._width;
   var height = this._height;
 
-  // Calculate the inverse projection matrix.
-  // TODO: cache result?
-  mat4.invert(invProj, this.projection());
-
   // Convert viewport coordinates to clip space.
-  var vecx = 2.0 * screen.x / width - 1.0;
-  var vecy = 1.0 - 2.0 * screen.y / height;
+  var vecx = 2 * coords.x / width - 1;
+  var vecy = 1 - 2 * coords.y / height;
   vec4.set(ray, vecx, vecy, 1, 1);
 
   // Project back to world space.
-  vec4.transformMat4(ray, ray, invProj);
+  vec4.transformMat4(ray, ray, this.inverseProjection());
 
   // Convert to flat coordinates.
   result.x = 0.5 + ray[0];
@@ -674,16 +688,16 @@ FlatView.prototype.screenToCoordinates = function(screen, result) {
 
 
 /**
- * View limiting functions.
+ * Factory functions for view limiters. See {@link FlatViewLimiter}.
  * @namespace
  */
 FlatView.limit = {
 
   /**
-   * Return a view limiter that constrains the x parameter.
-   * @param {number} min
-   * @param {number} max
-   * @return {Function} view limiter
+   * Returns a view limiter that constrains the x parameter.
+   * @param {number} min The minimum x value.
+   * @param {number} max The maximum y value.
+   * @return {FlatViewLimiter}
    */
   x: function(min, max) {
     return function limitX(params) {
@@ -694,9 +708,9 @@ FlatView.limit = {
 
   /**
    * Return a view limiter that constrains the y parameter.
-   * @param {number} min the minimum y value.
-   * @param {number} max the maximum y value.
-   * @return {Function} view limiter
+   * @param {number} min The minimum y value.
+   * @param {number} max The maximum y value.
+   * @return {FlatViewLimiter}
    */
   y: function(min, max) {
     return function limitY(params) {
@@ -706,10 +720,10 @@ FlatView.limit = {
   },
 
   /**
-   * Return a view limiter than constrains the zoom parameter.
-   * @param {number} min the minimum zoom value
-   * @param {number} max the maximum zoom value
-   * @return {Function} view limiter
+   * Returns a view limiter than constrains the zoom parameter.
+   * @param {number} min The minimum zoom value.
+   * @param {number} max The maximum zoom value.
+   * @return {FlatViewLimiter}
    */
   zoom: function(min, max) {
     return function limitZoom(params) {
@@ -719,14 +733,14 @@ FlatView.limit = {
   },
 
   /**
-   * Return a view limiter that prevents zooming in beyond the given
+   * Returns a view limiter that prevents zooming in beyond the given
    * resolution.
-   * @param {number} size the image width in pixels
-   * @return {Function} view limiter
+   * @param {number} size The image width in pixels.
+   * @return {FlatViewLimiter}
    */
   resolution: function(size) {
     return function limitResolution(params) {
-      if(params.width <= 0 || params.height <= 0) {
+      if (params.width <= 0 || params.height <= 0) {
         return params;
       }
       var width = params.width;
@@ -737,11 +751,11 @@ FlatView.limit = {
   },
 
   /**
-   * Return a view limiter that constrains the values of the x parameter that
+   * Returns a view limiter that constrains the values of the x parameter that
    * are inside the viewport.
-   * @param {number} min the minimum x value
-   * @param {number} max the maximum x value
-   * @return {Function} view limiter
+   * @param {number} min The minimum x value.
+   * @param {number} max The maximum x value.
+   * @return {FlatViewLimiter}
    */
   visibleX: function(min, max) {
     return function limitVisibleX(params) {
@@ -763,11 +777,11 @@ FlatView.limit = {
   },
 
   /**
-   * Return a view limiter that constrains the values of the y parameter that
+   * Returns a view limiter that constrains the values of the y parameter that
    * are inside the viewport.
-   * @param {number} min the minimum y value
-   * @param {number} max the maximum y value
-   * @return {Function} view limiter
+   * @param {number} min The minimum y value.
+   * @param {number} max The maximum y value.
+   * @return {FlatViewLimiter}
    */
   visibleY: function(min, max) {
     return function limitVisibleY(params) {
@@ -800,11 +814,11 @@ FlatView.limit = {
 
 
   /**
-   * Return a view limiter that constrains the zoom parameter such that
+   * Returns a view limiter that constrains the zoom parameter such that
    * zooming out is prevented beyond the point at which the image is fully
    * visible. Unless the image and the viewport have the same aspect ratio,
    * this will cause bands to appear around the image.
-   * @return {Function} view limiter
+   * @return {FlatViewLimiter}
    */
   letterbox: function() {
     return function limitLetterbox(params) {

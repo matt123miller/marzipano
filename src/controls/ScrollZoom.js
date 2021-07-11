@@ -15,10 +15,10 @@
  */
 'use strict';
 
-var Dynamics = require('./Dynamics');
-var WheelListener = require('./WheelListener');
-var defaults = require('../util/defaults');
 var eventEmitter = require('minimal-event-emitter');
+var Dynamics = require('./Dynamics');
+var defaults = require('../util/defaults');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 var defaultOptions = {
   frictionTime: 0.2,
@@ -26,10 +26,11 @@ var defaultOptions = {
 };
 
 /**
- * @class
- * @classdesc Control the fov/zoom by using the mouse wheel.
- *
+ * @class ScrollZoomControlMethod
  * @implements ControlMethod
+ * @classdesc
+ *
+ * Controls the fov/zoom through the mouse wheel.
  *
  * @param {Element} element Element to listen for events.
  * @param {Object} opts
@@ -37,26 +38,25 @@ var defaultOptions = {
  * @param {number} [opts.zoomDelta=0.001]
  */
 function ScrollZoomControlMethod(element, opts) {
+  this._element = element;
   this._opts = defaults(opts || {}, defaultOptions);
-
   this._dynamics = new Dynamics();
-
   this._eventList = [];
 
   var fn = this._opts.frictionTime ? this.withSmoothing : this.withoutSmoothing;
-  this._wheelListener = new WheelListener(element, fn.bind(this));
+  this._wheelListener = fn.bind(this);
+  
+  element.addEventListener('wheel', this._wheelListener);
 }
 
 eventEmitter(ScrollZoomControlMethod);
 
 /**
- * Destroy the instance
+ * Destructor.
  */
 ScrollZoomControlMethod.prototype.destroy = function() {
-  this._wheelListener.remove();
-  this._opts = null;
-  this._dynamics = null;
-  this._eventList = null;
+  this._element.removeEventListener('wheel', this._wheelListener);
+  clearOwnProperties(this);
 };
 
 

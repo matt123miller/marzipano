@@ -23,8 +23,9 @@ var Scene = require('./Scene');
 var Timer = require('./Timer');
 
 var WebGlStage = require('./stages/WebGl');
-var CssStage = require('./stages/Css');
-var FlashStage = require('./stages/Flash');
+
+var ControlCursor = require('./controls/ControlCursor');
+var HammerGestures = require('./controls/HammerGestures');
 
 var registerDefaultControls = require('./controls/registerDefaultControls');
 var registerDefaultRenderers = require('./renderers/registerDefaultRenderers');
@@ -32,28 +33,10 @@ var registerDefaultRenderers = require('./renderers/registerDefaultRenderers');
 var setOverflowHidden = require('./util/dom').setOverflowHidden;
 var setAbsolute = require('./util/dom').setAbsolute;
 var setFullSize = require('./util/dom').setFullSize;
-var setBlocking = require('./util/dom').setBlocking;
 
 var tween = require('./util/tween');
 var noop = require('./util/noop');
-
-var ControlCursor = require('./controls/ControlCursor');
-
-var HammerGestures = require('./controls/HammerGestures');
-
-var browser = require('bowser');
-
-var stageMap = {
-  webgl: WebGlStage,
-  css: CssStage,
-  flash: FlashStage
-};
-
-var stagePrefList = [
-  WebGlStage,
-  CssStage,
-  FlashStage
-];
+var clearOwnProperties = require('./util/clearOwnProperties');
 
 /**
  * Signals that the current scene has changed.
@@ -67,8 +50,9 @@ var stagePrefList = [
  */
 
 /**
- * @class
+ * @class Viewer
  * @classdesc
+ *
  * A Viewer is a container for multiple {@link Scene scenes} to be displayed
  * inside a {@link Stage stage} contained in the DOM.
  *
@@ -78,9 +62,6 @@ var stagePrefList = [
  *
  * @param {Element} domElement The DOM element to contain the stage.
  * @param {Object} opts Viewer creation options.
- * @param {(null|'webgl'|'css'|'flash')} [opts.stageType=null] The type of stage
- *     to create. The default is to choose the most appropriate type depending
- *     on the browser capabilities.
  * @param {Object} opts.controls Options to be passed to
  *     {@link registerDefaultControls}.
  * @param {Object} opts.stage Options to be passed to the {@link Stage}
@@ -97,32 +78,8 @@ function Viewer(domElement, opts) {
   // Add `overflow: hidden` to the domElement.
   setOverflowHidden(domElement);
 
-  // Select the stage type to use.
-  var Stage;
-  if (opts.stageType) {
-    // If a specific stage type was specified, use that one.
-    Stage = stageMap[opts.stageType];
-    if (!Stage) {
-      throw new Error('Unknown stage type: ' + opts.stageType);
-    }
-  } else {
-    // Choose the best supported stage according to the default preference
-    // order. Note that this may yield an unsupported stage for some
-    // geometry/view combinations. Client code is expected to pass in a
-    // specific stage type in those cases.
-    for (var i = 0; i < stagePrefList.length; i++) {
-      if (stagePrefList[i].supported()) {
-        Stage = stagePrefList[i];
-        break;
-      }
-    }
-    if (!Stage) {
-      throw new Error('None of the stage types are supported');
-    }
-  }
-
   // Create stage.
-  this._stage = new Stage(opts.stage);
+  this._stage = new WebGlStage(opts.stage);
 
   // Register the default renderers for the selected stage.
   registerDefaultRenderers(this._stage);
@@ -138,25 +95,6 @@ function Viewer(domElement, opts) {
   this._controlContainer = document.createElement('div');
   setAbsolute(this._controlContainer);
   setFullSize(this._controlContainer);
-
-  // Prevent bounce scroll effect on iOS.
-  // Applied only for iOS, as Android's events must have the default action to allow interaction with hotspots.
-  if (browser.ios) {
-    this._controlContainer.addEventListener('touchmove', function(event) {
-      event.preventDefault();
-    });
-  }
-
-
-  // Old IE does not detect mouse events on elements without background
-  // Add a child element to the controls with full width, a background color
-  // and opacity 0
-  var controlCapture = document.createElement('div');
-  setAbsolute(controlCapture);
-  setFullSize(controlCapture);
-  setBlocking(controlCapture);
-
-  this._controlContainer.appendChild(controlCapture);
   domElement.appendChild(this._controlContainer);
 
   // Respond to window size changes.
@@ -216,14 +154,14 @@ function Viewer(domElement, opts) {
   this.addEventListener('viewChange', this._resetIdleTimerHandler);
 
   // Start the idle movement when the idle timer fires.
-  this._enterIdleHandler = this._enterIdle.bind(this);
-  this._idleTimer.addEventListener('timeout', this._enterIdleHandler);
+  this._triggerIdleTimerHandler = this._triggerIdleTimer.bind(this);
+  this._idleTimer.addEventListener('timeout', this._triggerIdleTimerHandler);
 
-  // Stop the idle movement when the controls are activated or when the
+  // Stop an ongoing movement when the controls are activated or when the
   // scene changes.
-  this._leaveIdleHandler = this._leaveIdle.bind(this);
-  this._controls.addEventListener('active', this._leaveIdleHandler);
-  this.addEventListener('sceneChange', this._leaveIdleHandler);
+  this._stopMovementHandler = this.stopMovement.bind(this);
+  this._controls.addEventListener('active', this._stopMovementHandler);
+  this.addEventListener('sceneChange', this._stopMovementHandler);
 
   // The currently programmed idle movement.
   this._idleMovement = null;
@@ -238,56 +176,37 @@ eventEmitter(Viewer);
 Viewer.prototype.destroy = function() {
 
   window.removeEventListener('resize', this._updateSizeListener);
-  this._updateSizeListener = null;
-  this._size = null;
 
   if (this._currentScene) {
     this._removeSceneEventListeners(this._currentScene);
   }
-  this._currentScene = null;
 
   if (this._replacedScene) {
     this._removeSceneEventListeners(this._replacedScene);
   }
-  this._replacedScene = null;
-
-  this._layerChangeHandler = null;
-  this._viewChangeHandler = null;
 
   this._dragCursor.destroy();
-  this._dragCursor = null;
 
   for (var methodName in this._controlMethods) {
     this._controlMethods[methodName].destroy();
   }
-  this._controlMethods = null;
 
   while (this._scenes.length) {
     this.destroyScene(this._scenes[0]);
   }
-  this._scenes = null;
 
-  // The Flash renderer must be torn down before the element is removed from
-  // the DOM, so all scenes must have been destroyed before this point.
   this._domElement.removeChild(this._stage.domElement());
 
   this._stage.destroy();
-  this._stage = null;
-
   this._renderLoop.destroy();
-  this._renderLoop = null;
-
   this._controls.destroy();
   this._controls = null;
 
   if (this._cancelCurrentTween) {
     this._cancelCurrentTween();
-    this._cancelCurrentTween = null;
   }
 
-  this._domElement = null;
-  this._controlContainer = null;
-
+  clearOwnProperties(this);
 };
 
 
@@ -365,7 +284,7 @@ Viewer.prototype.createScene = function(opts) {
 
   var scene = this.createEmptyScene({ view: opts.view });
 
-  var layer = scene.createLayer({
+  scene.createLayer({
     source: opts.source,
     geometry: opts.geometry,
     pinFirstLevel: opts.pinFirstLevel,
@@ -402,6 +321,9 @@ Viewer.prototype.createEmptyScene = function(opts) {
 
 
 Viewer.prototype._updateSceneLayers = function() {
+  var i;
+  var layer;
+
   var stage = this._stage;
   var currentScene = this._currentScene;
   var replacedScene = this._replacedScene;
@@ -425,8 +347,8 @@ Viewer.prototype._updateSceneLayers = function() {
 
   if (newLayers.length < oldLayers.length) {
     // A layer was removed.
-    for (var i = 0; i < oldLayers.length; i++) {
-      var layer = oldLayers[i];
+    for (i = 0; i < oldLayers.length; i++) {
+      layer = oldLayers[i];
       if (newLayers.indexOf(layer) < 0) {
         this._removeLayerFromStage(layer);
         break;
@@ -435,8 +357,8 @@ Viewer.prototype._updateSceneLayers = function() {
   }
   if (newLayers.length > oldLayers.length) {
     // A layer was added.
-    for (var i = 0; i < newLayers.length; i++) {
-      var layer = newLayers[i];
+    for (i = 0; i < newLayers.length; i++) {
+      layer = newLayers[i];
       if (oldLayers.indexOf(layer) < 0) {
         this._addLayerToStage(layer, i);
       }
@@ -487,12 +409,15 @@ Viewer.prototype.destroyScene = function(scene) {
     throw new Error('No such scene in viewer');
   }
 
+  var j;
+  var layers;
+
   if (this._currentScene === scene) {
     // The destroyed scene is the current scene.
     // Remove event listeners, remove layers from stage and cancel transition.
     this._removeSceneEventListeners(scene);
-    var layers = scene.listLayers();
-    for (var j = 0; j < layers.length; j++) {
+    layers = scene.listLayers();
+    for (j = 0; j < layers.length; j++) {
       this._removeLayerFromStage(layers[j]);
     }
     if (this._cancelCurrentTween) {
@@ -507,8 +432,8 @@ Viewer.prototype.destroyScene = function(scene) {
     // The destroyed scene is being switched away from.
     // Remove event listeners and remove layers from stage.
     this._removeSceneEventListeners(scene);
-    var layers = scene.listLayers();
-    for (var j = 0; j < layers.length; j++) {
+    layers = scene.listLayers();
+    for (j = 0; j < layers.length; j++) {
       this._removeLayerFromStage(layers[j]);
     }
     this._replacedScene = null;
@@ -594,21 +519,21 @@ Viewer.prototype.lookTo = function(params, opts, done) {
 
 
 /**
- * Starts a movement.
+ * Starts a movement, possibly replacing the current movement.
  *
  * This method is equivalent to calling {@link Scene#startMovement} on the
- * current scene.
+ * current scene. If there is no current scene, this is a no-op.
  *
  * @param {function} fn The movement function.
  * @param {function} done Function to be called when the movement finishes or is
  *     interrupted.
  */
-Viewer.prototype.startMovement = function(fn, cb) {
-  // TODO: is it an error to call startMovement when no scene is displayed?
+Viewer.prototype.startMovement = function(fn, done) {
   var scene = this._currentScene;
-  if (scene) {
-    scene.startMovement(fn, cb);
+  if (!scene) {
+    return;
   }
+  scene.startMovement(fn, done);
 };
 
 
@@ -616,13 +541,31 @@ Viewer.prototype.startMovement = function(fn, cb) {
  * Stops the current movement.
  *
  * This method is equivalent to calling {@link Scene#stopMovement} on the
- * current scene.
+ * current scene. If there is no current scene, this is a no-op.
  */
 Viewer.prototype.stopMovement = function() {
   var scene = this._currentScene;
-  if (scene) {
-    scene.stopMovement();
+  if (!scene) {
+    return;
   }
+  scene.stopMovement();
+};
+
+
+/**
+ * Returns the current movement.
+ *
+ * This method is equivalent to calling {@link Scene#movement} on the
+ * current scene. If there is no current scene, this is a no-op.
+ *
+ * @return {function}
+ */
+Viewer.prototype.movement = function() {
+  var scene = this._currentScene;
+  if (!scene) {
+    return;
+  }
+  return scene.movement();
 };
 
 
@@ -648,7 +591,7 @@ Viewer.prototype.setIdleMovement = function(timeout, movement) {
  * {@link Viewer#setIdleMovement}.
  */
 Viewer.prototype.breakIdleMovement = function() {
-  this._leaveIdle();
+  this.stopMovement();
   this._resetIdleTimer();
 };
 
@@ -658,24 +601,12 @@ Viewer.prototype._resetIdleTimer = function() {
 };
 
 
-Viewer.prototype._enterIdle = function() {
-  var scene = this._currentScene;
+Viewer.prototype._triggerIdleTimer = function() {
   var idleMovement = this._idleMovement;
-  if (!scene || !idleMovement) {
+  if (!idleMovement) {
     return;
   }
-  scene.startMovement(idleMovement);
-};
-
-
-Viewer.prototype._leaveIdle = function() {
-  var scene = this._currentScene;
-  if (!scene) {
-    return;
-  }
-  if (scene.movement() === this._idleMovement) {
-    scene.stopMovement();
-  }
+  this.startMovement(idleMovement);
 };
 
 
@@ -757,7 +688,6 @@ Viewer.prototype.switchScene = function(newScene, opts, done) {
       opts.transitionUpdate : defaultTransitionUpdate;
 
   // Add new scene layers into the stage before starting the transition.
-  var newSceneLayers = newScene.listLayers();
   for (var i = 0; i < newSceneLayers.length; i++) {
     this._addLayerToStage(newSceneLayers[i]);
   }

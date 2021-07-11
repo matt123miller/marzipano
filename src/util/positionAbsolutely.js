@@ -15,21 +15,15 @@
  */
 'use strict';
 
-function getPerformanceClock() {
-  if (window.performance && window.performance.now) {
-    return function performanceClock() {
-      return window.performance.now();
-    };
-  }
-  return null;
+var setTransform = require('./dom').setTransform;
+var decimal = require('./decimal');
+
+function positionAbsolutely(element, x, y, extraTransforms) {
+  extraTransforms = extraTransforms || '';
+  // A translateZ(0) transform improves performance on Chrome by creating a
+  // new layer for the element, which prevents unnecessary repaints.
+  var transform = 'translateX(' + decimal(x) + 'px) translateY(' + decimal(y) + 'px) translateZ(0) ' + extraTransforms;
+  setTransform(element, transform);
 }
 
-function getDateClock() {
-  return function dateNowClock() {
-    return Date.now();
-  };
-}
-
-var clock = getPerformanceClock() || getDateClock();
-
-module.exports = clock;
+module.exports = positionAbsolutely;

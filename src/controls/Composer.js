@@ -17,12 +17,15 @@
 
 var eventEmitter = require('minimal-event-emitter');
 var Dynamics = require('./Dynamics');
-var defaultClock = require('../util/clock');
+var now = require('../util/now');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 /**
- * @class
- * @classdesc Combines changes in parameters triggered by multiple
- * {@link ControlMethod} instances.
+ * @class ControlComposer
+ * @classdesc
+ *
+ * Combines changes in parameters triggered by multiple {@link ControlMethod}
+ * instances.
  *
  * @listens ControlMethod#parameterDynamics
  */
@@ -33,7 +36,7 @@ function ControlComposer(opts) {
 
   this._parameters = [ 'x' ,'y', 'axisScaledX', 'axisScaledY', 'zoom', 'yaw', 'pitch', 'roll' ];
 
-  this._clock = opts.clock || defaultClock;
+  this._now = opts.nowForTesting || now;
 
   this._composedOffsets = { };
 
@@ -103,14 +106,14 @@ ControlComposer.prototype.list = function() {
 };
 
 
-ControlComposer.prototype._updateDynamics = function(storedDynamics, event, parameter, dynamics) {
+ControlComposer.prototype._updateDynamics = function(storedDynamics, parameter, dynamics) {
   var parameterDynamics = storedDynamics[parameter];
 
   if (!parameterDynamics) {
     throw new Error("Unknown control parameter " + parameter);
   }
 
-  var newTime = this._clock();
+  var newTime = this._now();
   parameterDynamics.dynamics.update(dynamics, (newTime - parameterDynamics.time)/1000);
   parameterDynamics.time = newTime;
 
@@ -129,7 +132,7 @@ ControlComposer.prototype.offsets = function() {
   var parameter;
   var changing = false;
 
-  var currentTime = this._clock();
+  var currentTime = this._now();
 
   this._resetComposedOffsets();
 
@@ -152,7 +155,7 @@ ControlComposer.prototype.offsets = function() {
       // Calculate offset from velocity and add it
       var elapsed = (currentTime - parameterDynamics.time)/1000;
       var offsetFromVelocity = dynamics.offsetFromVelocity(elapsed);
-      
+
       if(offsetFromVelocity) {
         this._composedOffsets[parameter] += offsetFromVelocity;
       }
@@ -181,7 +184,7 @@ ControlComposer.prototype.destroy = function() {
     this.remove(instances[i]);
   }
 
-  this._methods = null;
+  clearOwnProperties(this);
 };
 
 

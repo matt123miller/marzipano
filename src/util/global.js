@@ -15,11 +15,18 @@
  */
 'use strict';
 
-var assert = require('proclaim');
+// The global object.
+var globalObject = (function() {
+  if (typeof window !== 'undefined') {
+    return window;
+  }
+  if (typeof self !== 'undefined') {
+    return self;
+  }
+  if (typeof global !== 'undefined') {
+    return global;
+  }
+  return null;
+})();
 
-assert.closeTo = function(actual, expected, delta, msg) {
-  assert.greaterThanOrEqual(actual, expected - delta, msg);
-  assert.lessThanOrEqual(actual, expected + delta, msg);
-};
-
-module.exports = assert;
+module.exports = globalObject;

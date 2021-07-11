@@ -15,14 +15,17 @@
  */
 'use strict';
 
-var Composer = require('./Composer');
 var eventEmitter = require('minimal-event-emitter');
+var Composer = require('./Composer');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 var debug = typeof MARZIPANODEBUG !== 'undefined' && MARZIPANODEBUG.controls;
 
 /**
- * @class
- * @classdesc Set of controls which affect a view (e.g. keyboard, touch)
+ * @class Controls
+ * @classdesc
+ *
+ * Set of controls which affect a view (e.g. keyboard, touch)
  *
  * {@link ControlMethod} instances can be registered on this class. The methods
  * are then combined to calculate the final parameters to change the {@link View}.
@@ -56,6 +59,16 @@ function Controls(opts) {
 }
 
 eventEmitter(Controls);
+
+/**
+ * Destructor.
+ */
+Controls.prototype.destroy = function() {
+  this.detach();
+  this._composer.destroy();
+  clearOwnProperties(this);
+};
+
 
 /**
  * @return {ControlMethod[]} List of registered @{link ControlMethod instances}
@@ -122,15 +135,16 @@ Controls.prototype.enableMethod = function(id) {
   if (!method) {
     throw new Error('No control method registered with id ' + id);
   }
-  if (!method.enabled) {
-    method.enabled = true;
-    if (method.active) {
-      this._incrementActiveCount();
-    }
-    this._listen(id);
-    this._updateComposer();
-    this.emit('methodEnabled', id);
+  if (method.enabled) {
+    return;
   }
+  method.enabled = true;
+  if (method.active) {
+    this._incrementActiveCount();
+  }
+  this._listen(id);
+  this._updateComposer();
+  this.emit('methodEnabled', id);
 };
 
 
@@ -142,15 +156,16 @@ Controls.prototype.disableMethod = function(id) {
   if (!method) {
     throw new Error('No control method registered with id ' + id);
   }
-  if (method.enabled) {
-    method.enabled = false;
-    if (method.active) {
-      this._decrementActiveCount();
-    }
-    this._unlisten(id);
-    this._updateComposer();
-    this.emit('methodDisabled', id);
+  if (!method.enabled) {
+    return;
   }
+  method.enabled = false;
+  if (method.active) {
+    this._decrementActiveCount();
+  }
+  this._unlisten(id);
+  this._updateComposer();
+  this.emit('methodDisabled', id);
 };
 
 
@@ -215,6 +230,9 @@ Controls.prototype.enabled = function() {
  * Enables the controls
  */
 Controls.prototype.enable = function() {
+  if (this._enabled) {
+    return;
+  }
   this._enabled = true;
   if (this._activeCount > 0) {
     this.emit('active');
@@ -228,6 +246,9 @@ Controls.prototype.enable = function() {
  * Disables the controls
  */
 Controls.prototype.disable = function() {
+  if (!this._enabled) {
+    return;
+  }
   this._enabled = false;
   if (this._activeCount > 0) {
     this.emit('inactive');
@@ -402,16 +423,6 @@ Controls.prototype._updateViewsWithControls = function() {
       this.updatedViews_.push(view);
     }
   }
-};
-
-
-/**
- * Destroys the instance
- */
-Controls.prototype.destroy = function() {
-  this.detach();
-  this._composer.destroy();
-  this._methods = null;
 };
 
 

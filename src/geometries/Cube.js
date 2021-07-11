@@ -17,42 +17,20 @@
 
 var inherits = require('../util/inherits');
 var hash = require('../util/hash');
-var GraphFinder = require('../GraphFinder');
+var TileSearcher = require('../TileSearcher');
 var LruMap = require('../collections/LruMap');
 var Level = require('./Level');
 var makeLevelList = require('./common').makeLevelList;
 var makeSelectableLevelList = require('./common').makeSelectableLevelList;
-var rotateVector = require('../util/rotateVector');
 var clamp = require('../util/clamp');
 var cmp = require('../util/cmp');
 var type = require('../util/type');
-var vec3 = require('gl-matrix/src/gl-matrix/vec3');
+var vec3 = require('gl-matrix').vec3;
+var vec4 = require('gl-matrix').vec4;
 
-// Some renderer implementations require tiles to be padded around with
-// repeated pixels to prevent the appearance of visible seams between tiles.
-//
-// In order to prevent the padding from being visible, the tiles must be
-// padded and stacked such that the padding on one of the sides, when present,
-// stacks below the neighboring tile on that side.
-//
-// The padding rules are as follows:
-// * Define a tile to be X-marginal if it contacts the X-edge of its cube face.
-// * Pad top if the tile is top-marginal and the face is F or U.
-// * Pad bottom unless the tile is bottom-marginal or the face is F or D.
-// * Pad left if the tile is left-marginal and the face is F, L, U or D.
-// * Pad right unless the tile is right-marginal or the face is F, R, U or D.
-//
-// The stacking rules are as follows:
-// * Within an image, stack smaller zoom levels below larger zoom levels.
-// * Within a level, stack tiles bottom to top in FUDLRB face order.
-// * Within a face, stack tiles bottom to top in ascending Y coordinate order.
-// * Within a row, stack tiles bottom to top in ascending X coordinate order.
-//
-// Crucially, these rules affect the implementation of the tile cmp() method,
-// which determines the stacking order, and of the pad*() tile methods, which
-// determine the amount of padding on each of the four sides of a tile.
+var neighborsCacheSize = 64;
 
-// Initials for cube faces in stacking order.
+// Initials for cube faces.
 var faceList = 'fudlrb';
 
 // Rotation of each face, relative to the front face.
@@ -65,13 +43,29 @@ var faceRotation = {
   d: { x: -Math.PI/2, y: 0 }
 };
 
+// Zero vector.
+var origin = vec3.create();
+
+// Rotate a vector in ZXY order.
+function rotateVector(vec, z, x, y) {
+  if (z) {
+    vec3.rotateZ(vec, vec, origin, z);
+  }
+  if (x) {
+    vec3.rotateX(vec, vec, origin, x);
+  }
+  if (y) {
+    vec3.rotateY(vec, vec, origin, y);
+  }
+}
+
 // Normalized vectors pointing to the center of each face.
 var faceVectors = {};
 for (var i = 0; i < faceList.length; i++) {
   var face = faceList[i];
   var rotation = faceRotation[face];
   var v = vec3.fromValues(0,  0, -1);
-  rotateVector(v, v, rotation.y, rotation.x, 0);
+  rotateVector(v, 0, rotation.x, rotation.y);
   faceVectors[face] = v;
 }
 
@@ -96,9 +90,11 @@ var neighborOffsets = [
 
 
 /**
- * @class
+ * @class CubeTile
  * @implements Tile
- * @classdesc A tile in a @{CubeGeometry}.
+ * @classdesc
+ *
+ * A tile in a @{CubeGeometry}.
  */
 function CubeTile(face, x, y, z, geometry) {
   this.face = face;
@@ -140,83 +136,16 @@ CubeTile.prototype.scaleY = function() {
 };
 
 
-CubeTile.prototype.width = function() {
-  return this._level.tileWidth();
-};
-
-
-CubeTile.prototype.height = function() {
-  return this._level.tileHeight();
-};
-
-
-CubeTile.prototype.levelWidth = function() {
-  return this._level.width();
-};
-
-
-CubeTile.prototype.levelHeight = function() {
-  return this._level.height();
-};
-
-
-CubeTile.prototype.atTopLevel = function() {
-  return this.z === 0;
-};
-
-
-CubeTile.prototype.atBottomLevel = function() {
-  return this.z === this._geometry.levelList.length - 1;
-};
-
-
-CubeTile.prototype.atTopEdge = function() {
-  return this.y === 0;
-};
-
-
-CubeTile.prototype.atBottomEdge = function() {
-  return this.y === this._level.numVerticalTiles() - 1;
-};
-
-
-CubeTile.prototype.atLeftEdge = function() {
-  return this.x === 0;
-};
-
-
-CubeTile.prototype.atRightEdge = function() {
-  return this.x === this._level.numHorizontalTiles() - 1;
-};
-
-
-CubeTile.prototype.padTop = function() {
-  return this.atTopEdge() && /[fu]/.test(this.face);
-};
-
-
-CubeTile.prototype.padBottom = function() {
-  return !this.atBottomEdge() || /[fd]/.test(this.face);
-};
-
-
-CubeTile.prototype.padLeft = function() {
-  return this.atLeftEdge() && /[flud]/.test(this.face);
-};
-
-
-CubeTile.prototype.padRight = function() {
-  return !this.atRightEdge() || /[frud]/.test(this.face);
-};
-
-
 CubeTile.prototype.vertices = function(result) {
+  if (!result) {
+    result = [vec3.create(), vec3.create(), vec3.create(), vec3.create()];
+  }
 
   var rot = faceRotation[this.face];
 
   function makeVertex(vec, x, y) {
     vec3.set(vec, x, y, -0.5);
-    rotateVector(vec, vec, rot.y, rot.x, 0);
+    rotateVector(vec, 0, rot.x, rot.y);
   }
 
   var left = this.centerX() - this.scaleX() / 2;
@@ -230,13 +159,12 @@ CubeTile.prototype.vertices = function(result) {
   makeVertex(result[3], left, bottom);
 
   return result;
-
 };
 
 
 CubeTile.prototype.parent = function() {
 
-  if (this.atTopLevel()) {
+  if (this.z === 0) {
     return null;
   }
 
@@ -260,7 +188,7 @@ CubeTile.prototype.parent = function() {
 
 CubeTile.prototype.children = function(result) {
 
-  if (this.atBottomLevel()) {
+  if (this.z === this._geometry.levelList.length - 1) {
     return null;
   }
 
@@ -359,14 +287,14 @@ CubeTile.prototype.neighbors = function() {
       // belongs to.
 
       rot = faceRotation[face];
-      rotateVector(vec, vec, rot.y, rot.x, 0);
+      rotateVector(vec, 0, rot.x, rot.y);
 
       // Finally, rotate the vector from the neighboring face into the front
       // face. Again, this is so that the neighboring tile x,y coordinates
       // map directly into the x,y axes.
 
       rot = faceRotation[newFace];
-      rotateVector(vec, vec, -rot.y, -rot.x, 0);
+      rotateVector(vec, 0, -rot.x, -rot.y);
 
       // Calculate the neighboring tile coordinates.
 
@@ -386,50 +314,27 @@ CubeTile.prototype.neighbors = function() {
 
 
 CubeTile.prototype.hash = function() {
-  return CubeTile.hash(this);
+  return hash(faceList.indexOf(this.face), this.z, this.y, this.x);
 };
 
 
-CubeTile.prototype.equals = function(other) {
-  return CubeTile.equals(this, other);
+CubeTile.prototype.equals = function(that) {
+  return (this._geometry === that._geometry &&
+      this.face === that.face &&
+      this.z === that.z &&
+      this.y === that.y &&
+      this.x === that.x);
 };
 
 
-CubeTile.prototype.cmp = function(other) {
-  return CubeTile.cmp(this, other);
+CubeTile.prototype.cmp = function(that) {
+  return (cmp(this.z, that.z) ||
+  cmp(faceList.indexOf(this.face), faceList.indexOf(that.face)) ||
+  cmp(this.y, that.y) || cmp(this.x, that.x));
 };
 
 
 CubeTile.prototype.str = function() {
-  return CubeTile.str(this);
-};
-
-
-CubeTile.hash = function(tile) {
-  return tile != null ? hash(tile.face.charCodeAt(0), tile.z, tile.x, tile.y) : 0;
-};
-
-
-CubeTile.equals = function(tile1, tile2) {
-  return (tile1 != null && tile2 != null &&
-          tile1.face === tile2.face &&
-          tile1.z === tile2.z &&
-          tile1.x === tile2.x &&
-          tile1.y === tile2.y);
-};
-
-
-CubeTile.cmp = function(tile1, tile2) {
-  var face1 = faceList.indexOf(tile1.face);
-  var face2 = faceList.indexOf(tile2.face);
-  return (cmp(tile1.z, tile2.z) ||
-          cmp(face1, face2) ||
-          cmp(tile1.y, tile2.y) ||
-          cmp(tile1.x, tile2.x));
-};
-
-
-CubeTile.str = function(tile) {
   return 'CubeTile(' + tile.face + ', ' + tile.x + ', ' + tile.y + ', ' + tile.z + ')';
 };
 
@@ -511,10 +416,12 @@ CubeLevel.prototype._validateWithParentLevel = function(parentLevel) {
 
 
 /**
- * @class
+ * @class CubeGeometry
  * @implements Geometry
- * @classdesc A @{geometry} implementation suitable for tiled cube images with
- *            multiple resolution levels.
+ * @classdesc
+ *
+ * A {@link Geometry} implementation suitable for tiled cube images with
+ * multiple resolution levels.
  *
  * The following restrictions apply:
  *   - All tiles in a level must be square and form a rectangular grid;
@@ -539,22 +446,13 @@ function CubeGeometry(levelPropertiesList) {
     this.levelList[i]._validateWithParentLevel(this.levelList[i-1]);
   }
 
-  this._graphFinder = new GraphFinder(CubeTile.equals, CubeTile.hash);
+  this._tileSearcher = new TileSearcher(this);
 
-  this._neighborsCache = new LruMap(CubeTile.equals, CubeTile.hash, 64);
+  this._neighborsCache = new LruMap(neighborsCacheSize);
 
-  this._vec = vec3.create();
+  this._vec = vec4.create();
 
   this._viewSize = {};
-
-  this._viewParams = {};
-
-  this._tileVertices = [
-    vec3.create(),
-    vec3.create(),
-    vec3.create(),
-    vec3.create()
-  ];
 }
 
 
@@ -590,16 +488,15 @@ CubeGeometry.prototype.levelTiles = function(level, result) {
 };
 
 
-CubeGeometry.prototype._closestTile = function(params, level) {
-
+CubeGeometry.prototype._closestTile = function(view, level) {
   var ray = this._vec;
+
+  // Compute a view ray into the central screen point.
+  vec4.set(ray, 0, 0, 1, 1);
+  vec4.transformMat4(ray, ray, view.inverseProjection());
 
   var minAngle = Infinity;
   var closestFace = null;
-
-  // Calculate a view ray pointing to the tile.
-  vec3.set(ray, 0, 0, -1);
-  rotateVector(ray, ray, -params.yaw, -params.pitch, -params.roll);
 
   // Find the face whose vector makes a minimal angle with the view ray.
   // This is the face into which the view ray points.
@@ -622,7 +519,7 @@ CubeGeometry.prototype._closestTile = function(params, level) {
 
   // Rotate view ray into front face.
   var rot = faceRotation[closestFace];
-  rotateVector(ray, ray, -rot.y, -rot.x, -rot.z);
+  rotateVector(ray, 0, -rot.x, -rot.y);
 
   // Get the desired zoom level.
   var tileZ = this.levelList.indexOf(level);
@@ -630,10 +527,8 @@ CubeGeometry.prototype._closestTile = function(params, level) {
   var numY = level.numVerticalTiles();
 
   // Find the coordinates of the tile that the view ray points into.
-  var x = ray[0];
-  var y = ray[1];
-  var tileX = clamp(Math.floor((0.5 + x) * numX), 0, numX - 1);
-  var tileY = clamp(Math.floor((0.5 - y) * numY), 0, numY - 1);
+  var tileX = clamp(Math.floor((0.5 + ray[0]) * numX), 0, numX - 1);
+  var tileY = clamp(Math.floor((0.5 - ray[1]) * numY), 0, numY - 1);
 
   return new CubeTile(closestFace, tileX, tileY, tileZ, this);
 };
@@ -641,18 +536,7 @@ CubeGeometry.prototype._closestTile = function(params, level) {
 
 CubeGeometry.prototype.visibleTiles = function(view, level, result) {
   var viewSize = this._viewSize;
-  var viewParams = this._viewParams;
-  var tileVertices = this._tileVertices;
-  var graphFinder = this._graphFinder;
-
-  function tileNeighbors(t) {
-    return t.neighbors();
-  }
-
-  function tileVisible(t) {
-    t.vertices(tileVertices);
-    return view.intersects(tileVertices);
-  }
+  var tileSearcher = this._tileSearcher;
 
   result = result || [];
 
@@ -662,22 +546,17 @@ CubeGeometry.prototype.visibleTiles = function(view, level, result) {
     return result;
   }
 
-  var startingTile = this._closestTile(view.parameters(viewParams), level);
-  if (!tileVisible(startingTile)) {
+  var startingTile = this._closestTile(view, level);
+  var count = tileSearcher.search(view, startingTile, result);
+  if (!count) {
     throw new Error('Starting tile is not visible');
-  }
-
-  var tile;
-  graphFinder.start(startingTile, tileNeighbors, tileVisible);
-  while ((tile = graphFinder.next()) != null) {
-    result.push(tile);
   }
 
   return result;
 };
 
 
-CubeGeometry.TileClass = CubeGeometry.prototype.TileClass = CubeTile;
+CubeGeometry.Tile = CubeGeometry.prototype.Tile = CubeTile;
 CubeGeometry.type = CubeGeometry.prototype.type = 'cube';
 CubeTile.type = CubeTile.prototype.type = 'cube';
 

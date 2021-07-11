@@ -16,10 +16,13 @@
 'use strict';
 
 /**
- * @class
- * @classdesc Receives an asset which is returned on load.
+ * @class SingleAssetSource
  * @implements Source
- * @param {Asset} asset
+ * @classdesc
+ *
+ * A {@link Source} that always provides the same {@link Asset}.
+ *
+ * @param {Asset} asset The asset.
 */
 function SingleAssetSource(asset) {
   this._asset = asset;

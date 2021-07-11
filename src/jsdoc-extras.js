@@ -17,8 +17,50 @@
 // This file contains no executable code, only documentation.
 
 /**
+ * @interface Size
+ *
+ * The dimensions of a rectangular region.
+ *
+ * @property {number} width The width in pixels.
+ * @property {number} height The height in pixels.
+ */
+
+
+/**
+ * @interface Coords
+ *
+ * A pair of screen coordinates.
+ *
+ * @property {number} x The horizontal coordinate.
+ *     The horizontal axis points right.
+ * @property {number} y The vertical coordinate.
+ *     The vertical axis points down.
+ */
+
+
+/**
+ * @interface RectSpec
+ *
+ * A rectangular region expressed in relative (normalized), absolute (pixels),
+ * or mixed coordinates. A missing value is interpreted as the minimum or
+ * maximum value for the respective dimension. Where an absolute and a relative
+ * value are in conflict, the absolute value takes precedence.
+ *
+ * @property {number} relativeX The relative horizontal offset.
+ * @property {number} relativeY The relative vertical offset.
+ * @property {number} relativeWidth The relative width.
+ * @property {number} relativeHeight The relative height.
+ * @property {number} absoluteX The absolute horizontal offset.
+ * @property {number} absoluteY The absolute vertical offset.
+ * @property {number} absoluteWidth The absolute width.
+ * @property {number} absoluteHeight The absolute height.
+ */
+
+/**
  * @interface Rect
- * @classdesc Represents a rectangular region.
+ *
+ * A rectangular region in normalized coordinates.
+ *
  * @property {number} x The horizontal offset.
  * @property {number} y The vertical offset.
  * @property {number} width The width.
@@ -27,7 +69,8 @@
 
 /**
  * @interface View
- * @classdesc Defines the camera direction, aperture and projection used to
+ *
+ * Defines the camera direction, aperture and projection used to
  * render media.
  *
  * This is an abstract interface; the concrete implementations are
@@ -35,14 +78,15 @@
  */
 
 /**
- * Returns the view type, used by the {@link Stage} to determine the appropriate
+ * The view type, used by the {@link Stage} to determine the appropriate
  * renderer for a given geometry and view.
+ *
+ * Known values are `"rectilinear"` and `"flat"`.
  *
  * See also {@link Stage#registerRenderer}.
  *
- * @function
+ * @property {string}
  * @name View#type
- * @returns {string}
  */
 
 /**
@@ -56,12 +100,35 @@
  */
 
 /**
+ * @interface ImageLoader
+ * @classdesc Creates {@link Asset assets} by loading images.
+ */
+
+/**
+ * Loads an {@link Asset} from an image.
+ * @function
+ * @name ImageLoader.prototype.loadImage
+ * @param {string} url The image URL.
+ * @param {?Rect} rect A {@link Rect} describing a portion of the image, or null
+ *     for the full image.
+ * @param {function(?Error, Asset)} done The callback.
+ * @return {function()} A function to cancel loading.
+ */
+
+/**
  * @interface Source
  * @classdesc A source that loads 360° media.
  */
 
 /**
- * Loads an asset from the source.
+ * Signals that an error occurred while loading an asset.
+ * @event Source#networkError
+ * @param {Error} err The error.
+ * @param {Tile} tile The tile for which the asset was loaded.
+ */
+
+/**
+ * Loads an {@link Asset} from the source.
  * @function
  * @name Source.prototype.loadAsset
  * @param {Stage} stage
@@ -72,76 +139,65 @@
 
 /**
  * @interface Asset
- * @classdesc Asset loaded by a {@link Source}
- * @property {boolean} dynamic Whether the asset can change, requiring its
- * texture to be refreshed. Dynamic assets should fire
- * {@link Asset#event:change} when they change.
+ * @classdesc A rectangular pixel source from which a {@link Texture} may be
+ * created.
+ */
+
+ /**
+ * Signals that the contents of the underlying pixel source have changed.
+ * @event Asset#change
  */
 
 /**
- * Destroys the instance.
- * @function
- * @name Asset.prototype.destroy
- */
-
-/**
- * Retrieves the element that will be used for rendering.
+ * Returns the asset's underlying pixel source. The type varies depending on the
+ * {@link Stage} types the asset is compatible with.
  * @function
  * @name Asset.prototype.element
- * @returns {*} Something that the Texture can use to refresh itself. e.g. for
- * CssTexture, this is some value that can be used in
- * CanvasRenderingContext2D.drawImage().
+ * @returns {*}
  */
 
 /**
- * Retrieves the width of the Asset.
+ * Returns the asset's intrinsic width in CSS pixels.
  * @function
  * @name Asset.prototype.width
  * @returns {number}
  */
 
 /**
- * Retrieves the height of the Asset.
+ * Returns the asset's intrinsic height in CSS pixels.
  * @function
  * @name Asset.prototype.height
  * @returns {number}
  */
 
 /**
- * Retrieves a timestamp which identifies the current version of the Asset.
- * This is used to prevent dynamic textures from refreshing when not necessary.
+ * Returns the asset's timestamp, which increases monotonically whenever the
+ * contents of the underlying pixel source change.
  * @function
  * @name Asset.prototype.timestamp
  * @returns {number}
  */
 
 /**
- * Signals that the asset has changed.
- * @event Asset#change
+ * Returns whether the asset is dynamic, i.e., whether the contents of the
+ * underlying pixel source may change.
+ * @function
+ * @name Asset.prototype.isDynamic
+ * @returns {boolean}
  */
 
 /**
  * @interface Effects
  * @classdesc Effects to be applied on the rendering
- * @property {Number} opacity Transparency
- * @property {Object} rect Offset and size
- * @property {Number} rect.relativeWidth
- * @property {Number} rect.relativeHeight
- * @property {Number} rect.relativeX
- * @property {Number} rect.relativeY
- * @property {Number} rect.absoluteWidth
- * @property {Number} rect.absoluteHeight
- * @property {Number} rect.absoluteX
- * @property {Number} rect.absoluteY
+ * @property {Number} opacity Between 1 (fully opaque) and 0 (fully transparent)
+ * @property {RectSpec} rect The rectangular region on which to render. Useful
+ *     for side-by-side rendering or to otherwise compose a scene from
+ *     non-overlapping layers.
  * @property {vec4} colorOffset
  * @property {mat4} colorMatrix
- * @property {Object} textureCrop Use a subsection of the texture when rendering.
- Only supported on {@link WebGlEquirectRenderer}. Useful for rendering
- stereoscopic 360º video.
- * @property {Number} [textureCrop.width=1]
- * @property {Number} [textureCrop.height=1]
- * @property {Number} [textureCrop.x=0]
- * @property {Number} [textureCrop.y=0]
+ * @property {Rect} textureCrop Use only a portion of the texture when
+ *     rendering. Only supported on {@link WebGlEquirectRenderer}. Useful for
+ *     rendering stereoscopic 360° video.
  */
 
 /**
@@ -156,14 +212,15 @@
  */
 
 /**
- * Returns the geometry type, used by the {@link Stage} to determine the
- * appropriate renderer for a given geometry and view.
+ * The geometry type, used by the {@link Stage} to determine the appropriate
+ * renderer for a given geometry and view.
+ *
+ * Known values are `"cube"`, `"equirect"` and `"flat"`.
  *
  * See also {@link Stage#registerRenderer}.
  *
- * @function
+ * @property {string}
  * @name Geometry#type
- * @returns {string}
  */
 
 /**
@@ -190,26 +247,23 @@
 /**
  * Tile hash function.
  * @function
- * @name Tile.hash
- * @param {Tile} tile
+ * @name Tile#hash
  * @returns {number}
  */
 
 /**
  * Tile equality predicate.
  * @function
- * @name Tile.equals
- * @param {Tile} tile1
- * @param {Tile} tile2
+ * @name Tile#equals
+ * @param {Tile} that The tile to compare against.
  * @returns {boolean}
  */
 
 /**
  * Tile comparison function. Sorts tiles in bottom-to-top stacking order.
  * @function
- * @name Tile.cmp
- * @param {Tile} tile1
- * @param {Tile} tile2
+ * @name Tile#cmp
+ * @param {Tile} that The tile to compare against.
  * @returns {number}
  */
 
@@ -232,8 +286,7 @@
  * @function
  * @name Renderer#startLayer
  * @param {Layer} layer The layer onto which to render.
- * @param {Rect} rect The rectangular region of the viewport onto which to
- *     render, in normalized coordinates.
+ * @param {Rect} rect The rectangular region into which to render.
  */
 
 /**
@@ -256,8 +309,7 @@
  * @function
  * @name Renderer#endLayer
  * @param {Layer} layer The layer onto which to render.
- * @param {Rect} rect The rectangular region of the viewport onto which to
- *     render, in normalized coordinates.
+ * @param {Rect} rect The rectangular region into which to render.
  */
 
 /**

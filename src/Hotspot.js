@@ -16,63 +16,60 @@
 'use strict';
 
 var eventEmitter = require('minimal-event-emitter');
-var cssSupported = require('./support/Css');
-var positionAbsolutely = require('./positionAbsolutely');
+var positionAbsolutely = require('./util/positionAbsolutely');
 var setTransform = require('./util/dom').setTransform;
+var clearOwnProperties = require('./util/clearOwnProperties');
 
 /**
- * Use {@link HotspotContainer#createHotspot} instead of this constructor
- * @class
- * @classdesc HTML object positioned at certain coordinates
- * @param {Element} domElement Element that will be positioned
-
-  Positioning will be done using CSS Transforms when available and with the
-  `top` and `left` properties when not.
-
-  The `top` and `left` properties always position the top left corner of an
-  element. Therefore, the content of `domElement` must be centered around
-  its top left corner.
-
- * @param {Element} parentDomElement Usually the DOM element of a {@link HotspotContainer}
- * @param {View} view
- * @param {Object} params
- * @param {Object} opts
- * @param {Object} opts.perspective
-
- * @param {Number} [opts.perspective.radius=null] Transform hotspot as if it were on
- the surface of a sphere. The hotspot will then always cover the same part of the
- 360° image.
-
- This feature will only work on browsers with CSS 3D Transforms.
-
- When `radius` is enabled the hotspots are automatically centered.
-
- This value represents the radius of the sphere where the hotspot is. Therefore,
- the smaller this value, the larger the hotspot will appear on the screen.
-
- * @param {String} opts.perspective.extraRotations This value will be added to the
- `transform` CSS rule that places the hotspot in its position.
-
- This enables transforming the hotspot to overlay a certain surface on the panorama.
- For instance, one possible value would be `rotateX(0.5rad) rotateY(-0.1rad)`.
-*/
-function Hotspot(domElement, parentDomElement, view, params, opts) {
+ * @class Hotspot
+ * @classdesc
+ *
+ * A Hotspot allows a DOM element to be placed at a fixed position in the
+ * image. The position is updated automatically when the {@link View view}
+ * changes.
+ *
+ * Positioning is performed with the `transform` CSS property when available,
+ * falling back to the `position`, `left` and `top` properties when not.
+ * In both cases, the top left corner of the element is placed in the requested
+ * position; clients are expected to use additional children elements or other
+ * CSS properties to achieve more sophisticated layouts.
+ *
+ * There are two kinds of hotspots: regular and embedded. A regular hotspot
+ * does not change size depending on the zoom level. An embedded hotspot is
+ * displayed at a fixed size relative to the panorama, always covering the
+ * same portion of the image.
+ *
+ * Clients should call {@link HotspotContainer#createHotspot} instead of
+ * invoking the constructor directly.
+ *
+ * @param {Element} domElement The DOM element.
+ * @param {View} view The view.
+ * @param {Object} coords The hotspot coordinates.
+ *     Use {@link RectilinearViewCoords} for a {@link RectilinearView} or
+ *     {@link FlatViewCoords} for a {@link FlatView}.
+ * @param {Object} opts Additional options.
+ * @param {Object} opts.perspective Perspective options for embedded hotspots.
+ * @param {number} [opts.perspective.radius=null] If set, embed the hotspot
+ *     into the image by transforming it into the surface of a sphere with this
+ *     radius.
+ * @param {string} [opts.perspective.extraTransforms=null] If set, append this
+ *     value to the CSS `transform` property used to position the hotspot. This
+ *     may be used to rotate an embedded hotspot.
+ */
+function Hotspot(domElement, parentDomElement, view, coords, opts) {
 
   opts = opts || {};
   opts.perspective = opts.perspective || {};
-  opts.perspective.extraRotations = opts.perspective.extraRotations != null ? opts.perspective.extraRotations : "";
-
-  if (opts.perspective.radius && !cssSupported()) {
-    throw new Error('Hotspot cannot not be embedded in sphere for lack of browser support');
-  }
+  opts.perspective.extraTransforms =
+      opts.perspective.extraTransforms != null ? opts.perspective.extraTransforms : "";
 
   this._domElement = domElement;
   this._parentDomElement = parentDomElement;
   this._view = view;
-  this._params = {};
+  this._coords = {};
   this._perspective = {};
 
-  this.setPosition(params);
+  this.setPosition(coords);
 
   // Add hotspot into the DOM.
   this._parentDomElement.appendChild(this._domElement);
@@ -89,20 +86,14 @@ function Hotspot(domElement, parentDomElement, view, params, opts) {
 
 eventEmitter(Hotspot);
 
+
 /**
- * Destructor. Clients should call {@link HotspotContainer#destroyHotspot}
- * instead.
+ * Destructor.
+ * Clients should call {@link HotspotContainer#destroyHotspot} instead.
  */
 Hotspot.prototype.destroy = function() {
   this._parentDomElement.removeChild(this._domElement);
-
-  this._domElement = null;
-  this._parentDomElement = null;
-  this._params = null;
-  this._view = null;
-
-  this._position = null;
-  this._visible = false;
+  clearOwnProperties(this);
 };
 
 
@@ -115,19 +106,19 @@ Hotspot.prototype.domElement = function() {
 
 
 /**
- * @return {Object} Position params
+ * @return {Object}
  */
 Hotspot.prototype.position = function() {
-  return this._params;
+  return this._coords;
 };
 
 
 /**
- *  @param {Object} params Position params
+ * @param {Object} coords
  */
-Hotspot.prototype.setPosition = function(params) {
-  for(var key in params) {
-    this._params[key] = params[key];
+Hotspot.prototype.setPosition = function(coords) {
+  for (var key in coords) {
+    this._coords[key] = coords[key];
   }
   this._update();
   // TODO: We should probably emit a hotspotsChange event on the parent
@@ -136,7 +127,7 @@ Hotspot.prototype.setPosition = function(params) {
 
 
 /**
- * @return {Object} Perspective
+ * @return {Object}
  */
 Hotspot.prototype.perspective = function() {
   return this._perspective;
@@ -144,10 +135,10 @@ Hotspot.prototype.perspective = function() {
 
 
 /**
- *  @param {Object} params Perspective params
+ * @param {Object}
  */
 Hotspot.prototype.setPerspective = function(perspective) {
-  for(var key in perspective) {
+  for (var key in perspective) {
     this._perspective[key] = perspective[key];
   }
   this._update();
@@ -179,7 +170,7 @@ Hotspot.prototype.hide = function() {
 Hotspot.prototype._update = function() {
   var element = this._domElement;
 
-  var params = this._params;
+  var params = this._coords;
   var position = this._position;
   var x, y;
 
@@ -189,13 +180,14 @@ Hotspot.prototype._update = function() {
     var view = this._view;
 
     if (this._perspective.radius) {
-      // Hotspots which are embedded in the sphere should always be displayed. Even
-      // if they are behind the camera they can still be visible (e.g. a face-sized hotspot at yaw=91º)
+      // Hotspots that are embedded in the panorama may be visible even when
+      // positioned behind the camera.
       isVisible = true;
       this._setEmbeddedPosition(view, params);
-    }
-    else {
-      // Regular hotspots need only be displayed if they are not behind the camera
+    } else {
+      // Regular hotspots are only visible when positioned in front of the
+      // camera. Note that they may be partially visible when positioned outside
+      // the viewport.
       view.coordinatesToScreen(params, position);
       x = position.x;
       y = position.y;
@@ -221,13 +213,14 @@ Hotspot.prototype._update = function() {
 
 
 Hotspot.prototype._setEmbeddedPosition = function(view, params) {
-  var transform = view.coordinatesToPerspectiveTransform(params, this._perspective.radius, this._perspective.extraRotations);
+  var transform = view.coordinatesToPerspectiveTransform(
+      params, this._perspective.radius, this._perspective.extraTransforms);
   setTransform(this._domElement, transform);
 };
 
 
 Hotspot.prototype._setPosition = function(x, y) {
-  positionAbsolutely(this._domElement, x, y);
+  positionAbsolutely(this._domElement, x, y, this._perspective.extraTransforms);
 };
 
 

@@ -16,6 +16,7 @@
 'use strict';
 
 var eventEmitter = require('minimal-event-emitter');
+var clearOwnProperties = require('./util/clearOwnProperties');
 
 /**
  * Signals that {@link Stage#render} is about to be called.
@@ -28,11 +29,13 @@ var eventEmitter = require('minimal-event-emitter');
  */
 
 /**
- * @class
- * @classdesc A RenderLoop wraps a {@link Stage} and calls {@link Stage#render}
- * on the next frame whenever it fires {@link Stage#renderInvalid}. It may be
- * started and stopped, and is initially in the stopped state, in which no call
- * to {@link Stage#render} occurs.
+ * @class RenderLoop
+ * @classdesc
+ *
+ * A RenderLoop wraps a {@link Stage} and calls {@link Stage#render} on the next
+ * frame whenever it fires {@link Stage#renderInvalid}. It may be started and
+ * stopped, and is initially in the stopped state, in which no call to
+ * {@link Stage#render} occurs.
  *
  * @listens Stage#renderInvalid
  *
@@ -80,11 +83,7 @@ eventEmitter(RenderLoop);
 RenderLoop.prototype.destroy = function() {
   this.stop();
   this._stage.removeEventListener('renderInvalid', this._renderInvalidHandler);
-  this._stage = null;
-  this._running = null;
-  this._rendering = null;
-  this._requestHandle = null;
-  this._boundLoop = null;
+  clearOwnProperties(this);
 };
 
 

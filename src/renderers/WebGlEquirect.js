@@ -15,6 +15,9 @@
  */
 'use strict';
 
+var mat4 = require('gl-matrix').mat4;
+var clearOwnProperties = require('../util/clearOwnProperties');
+
 var WebGlCommon = require('./WebGlCommon');
 var createConstantBuffers = WebGlCommon.createConstantBuffers;
 var destroyConstantBuffers = WebGlCommon.destroyConstantBuffers;
@@ -42,14 +45,17 @@ var uniformList = [
   'uTextureHeight'
 ];
 
-var mat4 = require('gl-matrix/src/gl-matrix/mat4');
-
 
 /**
- * @class
- * @classdesc A renderer for {@link EquirectGeometry} and
- *     {@link RectilinearView}, appropriate for {@link WebGlStage}.
+ * @class WebGlEquirectRenderer
  * @implements Renderer
+ * @classdesc
+ *
+ * A renderer for {@link EquirectGeometry} and {@link RectilinearView},
+ * appropriate for {@link WebGlStage}.
+ *
+ * Most users do not need to instantiate this class. Renderers are created and
+ * destroyed by {@link Stage} as necessary.
  */
 function WebGlEquirectRenderer(gl) {
   this.gl = gl;
@@ -68,15 +74,8 @@ function WebGlEquirectRenderer(gl) {
 
 WebGlEquirectRenderer.prototype.destroy = function() {
   destroyConstantBuffers(this.gl, this.constantBuffers);
-  this.constantBuffers = null;
-
   destroyShaderProgram(this.gl, this.shaderProgram);
-  this.shaderProgram = null;
-
-  this.invProjMatrix = null;
-  this.viewportMatrix = null;
-
-  this.gl = null;
+  clearOwnProperties(this);
 };
 
 
@@ -124,7 +123,7 @@ WebGlEquirectRenderer.prototype.startLayer = function(layer, rect) {
 };
 
 
-WebGlEquirectRenderer.prototype.endLayer = function() {
+WebGlEquirectRenderer.prototype.endLayer = function(layer, rect) {
   var gl = this.gl;
   var shaderProgram = this.shaderProgram;
   disableAttributes(gl, shaderProgram);

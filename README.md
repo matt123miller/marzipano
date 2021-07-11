@@ -14,8 +14,8 @@ Please report bugs using the [issue tracker](https://github.com/google/marzipano
 
 You can include Marzipano in your project in two different ways:
 
-* Obtain the `marzipano.js` and `marzipano.swf` files from the latest release
-  at http://www.marzipano.net and copy them into your project.
+* Obtain the `marzipano.js` file from the latest release at
+  http://www.marzipano.net and copy them into your project.
 
 * Install Marzipano as a dependency using the `npm` package manager and
   `require` it as a module.
@@ -29,9 +29,6 @@ Some dependencies expect the Node.js interpreter to be called `node`. However,
 on Debian and Ubuntu systems, the binary installed by the `nodejs` package is
 called `nodejs`. To work around this, install the `nodejs-legacy` package, or
 use [nvm](https://github.com/creationix/nvm) instead.
-
-You also need a Java compiler to build the SWF file containing the Flash renderers
-(set 32-bit Java path in your PATH, as MXMLC does not support 64-bit Java).
 
 Run `npm install` to install the dependencies. If you haven't in a while,
 bring them up to date with `npm update`.
@@ -49,10 +46,12 @@ source or test files are edited.
 
 ### Maintainer guide
 
-Before preparing a release, make sure there are no uncommitted changes.
+Before preparing a release, make sure there are no uncommitted changes and
+verify that the tests pass and all of the demos work correctly.
 
-Create a new commit to bump the version number in `package.json`, tag it
-with `git tag vX.Y.Z`, and publish the tag with `git push --tags`.
+Update the `CHANGELOG` file and bump the version number in `package.json`.
+Create a new commit containing only the changes to these two files, tag it with
+`git tag vX.Y.Z`, and push it to GitHub with `git push --tags`.
 
 Run `npm run release` to prepare a new release.
 

@@ -15,9 +15,8 @@
  */
 'use strict';
 
-// Create viewer. WebGL support is required to set the projection center.
-var viewerOpts = { stageType: 'webgl' };
-var viewer = new Marzipano.Viewer(document.getElementById('pano'), viewerOpts);
+// Create viewer.
+var viewer = new Marzipano.Viewer(document.getElementById('pano'));
 
 // Create left and right layers
 var geometry = new Marzipano.CubeGeometry([
@@ -52,8 +51,8 @@ function createLayer(stage, view, geometry, eye, rect) {
     urlPrefix + "/" + eye + "/{z}/{f}/{y}/{x}.jpg",
     { cubeMapPreviewUrl: urlPrefix + "/" + eye + "/preview.jpg" });
 
-  var textureStore = new Marzipano.TextureStore(geometry, source, stage);
-  var layer = new Marzipano.Layer(stage, source, geometry, view, textureStore,
+  var textureStore = new Marzipano.TextureStore(source, stage);
+  var layer = new Marzipano.Layer(source, geometry, view, textureStore,
                                   { effects: { rect: rect }});
 
   layer.pinFirstLevel();

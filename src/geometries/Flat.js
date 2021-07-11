@@ -17,7 +17,7 @@
 
 var inherits = require('../util/inherits');
 var hash = require('../util/hash');
-var GraphFinder = require('../GraphFinder');
+var TileSearcher = require('../TileSearcher');
 var LruMap = require('../collections/LruMap');
 var Level = require('./Level');
 var makeLevelList = require('./common').makeLevelList;
@@ -26,22 +26,10 @@ var clamp = require('../util/clamp');
 var mod = require('../util/mod');
 var cmp = require('../util/cmp');
 var type = require('../util/type');
-var vec2 = require('gl-matrix/src/gl-matrix/vec2');
+var vec2 = require('gl-matrix').vec2;
+var vec4 = require('gl-matrix').vec4;
 
-// Some renderer implementations require tiles to be padded around with
-// repeated pixels to prevent the appearance of visible seams between tiles.
-//
-// In order to prevent the padding from being visible, the tiles must be
-// padded and stacked such that the padding on one of the sides, when present,
-// stacks below the neighboring tile on that side.
-//
-// Padding rules:
-// * Pad tiles on the right and on the bottom.
-//
-// Stacking rules:
-// * Within an image, stack smaller zoom levels below larger zoom levels.
-// * Within a level, stack tiles bottom to top in ascending Y coordinate order.
-// * Within a row, stack tiles bottom to top in ascending X coordinate order.
+var neighborsCacheSize = 64;
 
 // Offsets to apply to the (x,y) coordinates of a tile to get its neighbors.
 var neighborOffsets = [
@@ -53,9 +41,11 @@ var neighborOffsets = [
 
 
 /**
- * @class
+ * @class FlatTile
  * @implements Tile
- * @classdesc A tile in a @{FlatGeometry}.
+ * @classdesc
+ *
+ * A tile in a {@link FlatGeometry}.
  */
 function FlatTile(x, y, z, geometry) {
   this.x = x;
@@ -105,7 +95,7 @@ FlatTile.prototype.scaleY = function() {
 FlatTile.prototype.width = function() {
   var levelWidth = this._level.width();
   var tileWidth = this._level.tileWidth();
-  if (this.atRightEdge()) {
+  if (this.x === this._level.numHorizontalTiles() - 1) {
     var widthRemainder = mod(levelWidth, tileWidth);
     return widthRemainder || tileWidth;
   } else {
@@ -117,7 +107,7 @@ FlatTile.prototype.width = function() {
 FlatTile.prototype.height = function() {
   var levelHeight = this._level.height();
   var tileHeight = this._level.tileHeight();
-  if (this.atBottomEdge()) {
+  if (this.y === this._level.numVerticalTiles() - 1) {
     var heightRemainder = mod(levelHeight, tileHeight);
     return heightRemainder || tileHeight;
   } else {
@@ -136,57 +126,10 @@ FlatTile.prototype.levelHeight = function() {
 };
 
 
-FlatTile.prototype.atTopLevel = function() {
-  return this.z === 0;
-};
-
-
-FlatTile.prototype.atBottomLevel = function() {
-  return this.z === this._geometry.levelList.length - 1;
-};
-
-
-FlatTile.prototype.atTopEdge = function() {
-  return this.y === 0;
-};
-
-
-FlatTile.prototype.atBottomEdge = function() {
-  return this.y === this._level.numVerticalTiles() - 1;
-};
-
-
-FlatTile.prototype.atLeftEdge = function() {
-  return this.x === 0;
-};
-
-
-FlatTile.prototype.atRightEdge = function() {
-  return this.x === this._level.numHorizontalTiles() - 1;
-};
-
-
-FlatTile.prototype.padTop = function() {
-  return false;
-};
-
-
-FlatTile.prototype.padBottom = function() {
-  return !this.atBottomEdge();
-};
-
-
-FlatTile.prototype.padLeft = function() {
-  return false;
-};
-
-
-FlatTile.prototype.padRight = function() {
-  return !this.atRightEdge();
-};
-
-
 FlatTile.prototype.vertices = function(result) {
+  if (!result) {
+    result = [vec2.create(), vec2.create(), vec2.create(), vec2.create()];
+  }
 
   var left = this.centerX() - this.scaleX() / 2;
   var right = this.centerX() + this.scaleX() / 2;
@@ -199,14 +142,13 @@ FlatTile.prototype.vertices = function(result) {
   vec2.set(result[3], left, bottom);
 
   return result;
-
 };
 
 
 FlatTile.prototype.parent = function() {
 
 
-  if (this.atTopLevel()) {
+  if (this.z === 0) {
     return null;
   }
 
@@ -224,7 +166,7 @@ FlatTile.prototype.parent = function() {
 
 
 FlatTile.prototype.children = function(result) {
-  if (this.atBottomLevel()) {
+  if (this.z === this._geometry.levelList.length - 1) {
     return null;
   }
 
@@ -288,46 +230,22 @@ FlatTile.prototype.neighbors = function() {
 
 
 FlatTile.prototype.hash = function() {
-  return FlatTile.hash(this);
+  return hash(this.z, this.y, this.x);
 };
 
 
-FlatTile.prototype.equals = function(other) {
-  return FlatTile.equals(this, other);
+FlatTile.prototype.equals = function(that) {
+  return (this._geometry === that._geometry &&
+      this.z === that.z && this.y === that.y && this.x === that.x);
 };
 
 
-FlatTile.prototype.cmp = function(other) {
-  return FlatTile.cmp(this, other);
+FlatTile.prototype.cmp = function(that) {
+  return (cmp(this.z, that.z) || cmp(this.y, that.y) || cmp(this.x, that.x));
 };
 
 
 FlatTile.prototype.str = function() {
-  return FlatTile.str(this);
-};
-
-
-FlatTile.hash = function(tile) {
-  return tile != null ? hash(tile.z, tile.x, tile.y) : 0;
-};
-
-
-FlatTile.equals = function(tile1, tile2) {
-  return (tile1 != null && tile2 != null &&
-          tile1.z === tile2.z &&
-          tile1.x === tile2.x &&
-          tile1.y === tile2.y);
-};
-
-
-FlatTile.cmp = function(tile1, tile2) {
-  return (cmp(tile1.z, tile2.z) ||
-          cmp(tile1.y, tile2.y) ||
-          cmp(tile1.x, tile2.x));
-};
-
-
-FlatTile.str = function(tile) {
   return 'FlatTile(' + tile.x + ', ' + tile.y + ', ' + tile.z + ')';
 };
 
@@ -400,10 +318,12 @@ FlatLevel.prototype._validateWithParentLevel = function(parentLevel) {
 
 
 /**
- * @class
+ * @class FlatGeometry
  * @implements Geometry
- * @classdesc A @{Geometry} implementation suitable for tiled flat images with
- *            multiple resolution levels.
+ * @classdesc
+ *
+ * A {@link Geometry} implementation suitable for tiled flat images with
+ * multiple resolution levels.
  *
  * The following restrictions apply:
  *   - All tiles must be square, except when in the last row or column position,
@@ -431,20 +351,13 @@ function FlatGeometry(levelPropertiesList) {
     this.levelList[i]._validateWithParentLevel(this.levelList[i-1]);
   }
 
-  this._graphFinder = new GraphFinder(FlatTile.equals, FlatTile.hash);
+  this._tileSearcher = new TileSearcher(this);
 
-  this._neighborsCache = new LruMap(FlatTile.equals, FlatTile.hash, 64);
+  this._neighborsCache = new LruMap(neighborsCacheSize);
+
+  this._vec = vec4.create();
 
   this._viewSize = {};
-
-  this._viewParams = {};
-
-  this._tileVertices = [
-    vec2.create(),
-    vec2.create(),
-    vec2.create(),
-    vec2.create()
-  ];
 }
 
 
@@ -479,11 +392,16 @@ FlatGeometry.prototype.levelTiles = function(level, result) {
 };
 
 
-FlatGeometry.prototype._closestTile = function(params, level) {
+FlatGeometry.prototype._closestTile = function(view, level) {
+  var ray = this._vec;
 
-  // Get view parameters.
-  var x = params.x;
-  var y = params.y;
+  // Compute a view ray into the central screen point.
+  vec4.set(ray, 0, 0, 1, 1);
+  vec4.transformMat4(ray, ray, view.inverseProjection());
+
+  // Compute the image coordinates that the view ray points into.
+  var x = 0.5 + ray[0];
+  var y = 0.5 - ray[1];
 
   // Get the desired zoom level.
   var tileZ = this.levelList.indexOf(level);
@@ -499,24 +417,12 @@ FlatGeometry.prototype._closestTile = function(params, level) {
   var tileY = clamp(Math.floor(y * levelHeight / tileHeight), 0, numY - 1);
 
   return new FlatTile(tileX, tileY, tileZ, this);
-
 };
 
 
 FlatGeometry.prototype.visibleTiles = function(view, level, result) {
   var viewSize = this._viewSize;
-  var viewParams = this._viewParams;
-  var tileVertices = this._tileVertices;
-  var graphFinder = this._graphFinder;
-
-  function tileNeighbors(t) {
-    return t.neighbors();
-  }
-
-  function tileVisible(t) {
-    t.vertices(tileVertices);
-    return view.intersects(tileVertices);
-  }
+  var tileSearcher = this._tileSearcher;
 
   result = result || [];
 
@@ -526,22 +432,17 @@ FlatGeometry.prototype.visibleTiles = function(view, level, result) {
     return result;
   }
 
-  var startingTile = this._closestTile(view.parameters(viewParams), level);
-  if (!tileVisible(startingTile)) {
+  var startingTile = this._closestTile(view, level);
+  var count = tileSearcher.search(view, startingTile, result);
+  if (!count) {
     throw new Error('Starting tile is not visible');
-  }
-
-  var tile;
-  graphFinder.start(startingTile, tileNeighbors, tileVisible);
-  while ((tile = graphFinder.next()) != null) {
-    result.push(tile);
   }
 
   return result;
 };
 
 
-FlatGeometry.TileClass = FlatGeometry.prototype.TileClass = FlatTile;
+FlatGeometry.Tile = FlatGeometry.prototype.Tile = FlatTile;
 FlatGeometry.type = FlatGeometry.prototype.type = 'flat';
 FlatTile.type = FlatTile.prototype.type = 'flat';
 

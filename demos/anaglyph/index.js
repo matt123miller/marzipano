@@ -16,9 +16,7 @@
 'use strict';
 
 // Create viewer.
-// Anaglyphs are only supported on WebGl.
-var viewerOpts = { stageType: 'webgl' };
-var viewer = new Marzipano.Viewer(document.getElementById('pano'), viewerOpts);
+var viewer = new Marzipano.Viewer(document.getElementById('pano'));
 
 // Create geometry.
 var geometry = new Marzipano.CubeGeometry([
@@ -55,10 +53,10 @@ function createLayer(stage, view, geometry, eye) {
     { cubeMapPreviewUrl: urlPrefix + "/" + eye + "/preview.jpg" });
 
   // Create the texture store.
-  var textureStore = new Marzipano.TextureStore(geometry, source, stage);
+  var textureStore = new Marzipano.TextureStore(source, stage);
 
   // Create the layer.
-  var layer = new Marzipano.Layer(stage, source, geometry, view, textureStore);
+  var layer = new Marzipano.Layer(source, geometry, view, textureStore);
 
   layer.pinFirstLevel();
 

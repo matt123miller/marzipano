@@ -15,7 +15,7 @@
  */
 'use strict';
 
-var assert = require('proclaim');
+var assert = require('chai').assert;
 var sinon = require('sinon');
 
 var eventEmitter = require('minimal-event-emitter');
@@ -37,42 +37,28 @@ function MockTile(opts) {
   this.dynamicAsset = opts && opts.dynamicAsset;
   this.assetFailures = opts && opts.assetFailures || 0;
   this.textureFailures = opts && opts.textureFailures || 0;
+  this.hash = function() { return 0; };
+  this.equals = function(that) { return this === that; };
 }
 
 // Mock asset.
 function MockAsset(tile, dynamic) {
   this.id = tile.id;
-  this.dynamic = !!dynamic;
+  this.isDynamic = sinon.stub().returns(dynamic);
   this.destroy = sinon.spy();
 }
 
 eventEmitter(MockAsset);
 
 // Mock texture.
-// For these tests we only need the used() and destroy() methods; we also need
-// the mock texture to be an event emitter.
 function MockTexture(asset) {
   this.id = asset.id;
   this.refresh = sinon.spy();
   this.destroy = sinon.spy();
 }
 
-eventEmitter(MockTexture);
-
 var loadAssetError = new Error('Asset error');
 var createTextureError = new Error('Create texture');
-
-// Mock a Geometry. For these tests we only need the TileClass property.
-var mockGeometry = {
-  TileClass: {
-    equals: function(x, y) {
-      return x === y;
-    },
-    hash: function() {
-      return 0;
-    }
-  }
-};
 
 // Mock a Source. For these tests we only need the loadAsset() method.
 var mockSource = {
@@ -113,7 +99,7 @@ var mockStage = {
 };
 
 function makeTextureStore(opts) {
-  return new TextureStore(mockGeometry, mockSource, mockStage, opts);
+  return new TextureStore(mockSource, mockStage, opts);
 }
 
 suite('TextureStore', function() {
@@ -123,23 +109,74 @@ suite('TextureStore', function() {
     test('mark tile as visible', function() {
       var store = makeTextureStore();
       var tile = new MockTile();
+      assert.isFalse(store.query(tile).visible);
       store.startFrame();
       store.markTile(tile);
       store.endFrame();
-      assert.ok(store.query(tile).visible);
+      assert.isTrue(store.query(tile).visible);
     });
 
     test('mark tile as not visible', function() {
       var store = makeTextureStore();
       var tile = new MockTile();
+      assert.isFalse(store.query(tile).visible);
       store.startFrame();
       store.markTile(tile);
       store.endFrame();
       store.startFrame();
       store.endFrame();
-      assert.notOk(store.query(tile).visible);
+      assert.isFalse(store.query(tile).visible);
     });
 
+  });
+
+  suite('state machine', function() {
+
+    test('nested frames', function() {
+      var store = makeTextureStore();
+      var tile = new MockTile();
+      assert.isFalse(store.query(tile).visible);
+      store.startFrame();
+      store.startFrame();
+      store.markTile(tile);
+      store.endFrame();
+      assert.isFalse(store.query(tile).visible);
+      store.endFrame();
+      assert.isTrue(store.query(tile).visible);
+    });
+
+    test('start frame out of order', function() {
+      var store = makeTextureStore();
+      var tile = new MockTile();
+      store.startFrame();
+      store.markTile(tile);
+      assert.throws(function() { store.startFrame(); });
+      store.endFrame();
+      store.startFrame();
+      store.startFrame();
+      store.endFrame();
+      assert.throws(function() { store.startFrame(); });
+    });
+
+    test('mark tile out of order', function() {
+      var store = makeTextureStore();
+      var tile = new MockTile();
+      assert.throws(function() { store.markTile(tile); });
+      store.startFrame();
+      store.startFrame();
+      store.endFrame();
+      assert.throws(function() { store.markTile(tile); });
+      store.endFrame();
+      assert.throws(function() { store.markTile(tile); });
+    });
+
+    test('end frame out of order', function() {
+      var store = makeTextureStore();
+      assert.throws(function() { store.endFrame(); });
+      store.startFrame();
+      store.endFrame();
+      assert.throws(function() { store.endFrame(); });
+    });
   });
 
   suite('textures', function() {
@@ -147,15 +184,20 @@ suite('TextureStore', function() {
     test('load texture for static asset', function(done) {
       var store = makeTextureStore();
       var tile = new MockTile();
-      store.addEventListener('textureLoad', function(event, eventTile) {
-        var texture = store.texture(tile);
-        assert(event === 'textureLoad');
-        assert(eventTile === tile);
-        assert(texture != null);
-        assert(texture.id === tile.id);
-        assert(!store.query(tile).hasAsset);
-        assert(store.query(tile).hasTexture);
-        done();
+      store.addEventListener('textureStartLoad', function(eventTile) {
+        assert.strictEqual(eventTile, tile);
+        assert.strictEqual(store.texture(tile), null);
+        assert.isFalse(store.query(tile).hasAsset);
+        assert.isFalse(store.query(tile).hasTexture);
+        store.addEventListener('textureLoad', function(eventTile) {
+          var texture = store.texture(tile);
+          assert.strictEqual(eventTile, tile);
+          assert.isNotNull(texture);
+          assert.strictEqual(texture.id, tile.id);
+          assert.isFalse(store.query(tile).hasAsset);
+          assert.isTrue(store.query(tile).hasTexture);
+          done();
+        });
       });
       store.startFrame();
       store.markTile(tile);
@@ -165,15 +207,20 @@ suite('TextureStore', function() {
     test('load texture for dynamic asset', function(done) {
       var store = makeTextureStore();
       var tile = new MockTile({ dynamicAsset: true });
-      store.addEventListener('textureLoad', function(event, eventTile) {
-        var texture = store.texture(tile);
-        assert(event === 'textureLoad');
-        assert(eventTile === tile);
-        assert(texture != null);
-        assert(texture.id === tile.id);
-        assert(store.query(tile).hasAsset);
-        assert(store.query(tile).hasTexture);
-        done();
+      store.addEventListener('textureStartLoad', function(eventTile) {
+        assert.strictEqual(eventTile, tile);
+        assert.strictEqual(store.texture(tile), null);
+        assert.isFalse(store.query(tile).hasAsset);
+        assert.isFalse(store.query(tile).hasTexture);
+        store.addEventListener('textureLoad', function(eventTile) {
+          var texture = store.texture(tile);
+          assert.strictEqual(eventTile, tile);
+          assert.isNotNull(texture);
+          assert.strictEqual(texture.id, tile.id);
+          assert.isTrue(store.query(tile).hasAsset);
+          assert.isTrue(store.query(tile).hasTexture);
+          done();
+        });
       });
       store.startFrame();
       store.markTile(tile);
@@ -183,14 +230,13 @@ suite('TextureStore', function() {
     test('retry on loadAsset failure', function(done) {
       var store = makeTextureStore();
       var tile = new MockTile({ assetFailures: 1 }); // will succeed when retried
-      store.addEventListener('textureLoad', function(event, eventTile) {
+      store.addEventListener('textureLoad', function(eventTile) {
         var texture = store.texture(tile);
-        assert(event === 'textureLoad');
-        assert(eventTile === tile);
-        assert(texture != null);
-        assert(texture.id === tile.id);
-        assert(!store.query(tile).hasAsset);
-        assert(store.query(tile).hasTexture);
+        assert.strictEqual(eventTile, tile);
+        assert.isNotNull(texture);
+        assert.strictEqual(texture.id, tile.id);
+        assert.isFalse(store.query(tile).hasAsset);
+        assert.isTrue(store.query(tile).hasTexture);
         done();
       });
       store.startFrame();
@@ -201,11 +247,10 @@ suite('TextureStore', function() {
     test('error on createTexture failure', function(done) {
       var store = makeTextureStore();
       var tile = new MockTile({ textureFailures: 1 });
-      store.addEventListener('textureError', function(event, eventTile) {
-        assert(event === 'textureError');
-        assert(eventTile === tile);
-        assert(!store.query(tile).hasAsset);
-        assert(!store.query(tile).hasTexture);
+      store.addEventListener('textureError', function(eventTile) {
+        assert.strictEqual(eventTile, tile);
+        assert.isFalse(store.query(tile).hasAsset);
+        assert.isFalse(store.query(tile).hasTexture);
         done();
       });
       store.startFrame();
@@ -216,11 +261,10 @@ suite('TextureStore', function() {
     test('cancel load', function(done) {
       var store = makeTextureStore();
       var tile = new MockTile();
-      store.addEventListener('textureCancel', function(event, eventTile) {
-        assert(event === 'textureCancel');
-        assert(eventTile === tile);
-        assert(!store.query(tile).hasAsset);
-        assert(!store.query(tile).hasTexture);
+      store.addEventListener('textureCancel', function(eventTile) {
+        assert.strictEqual(eventTile, tile);
+        assert.isFalse(store.query(tile).hasAsset);
+        assert.isFalse(store.query(tile).hasTexture);
         done();
       });
       store.startFrame();
@@ -239,11 +283,10 @@ suite('TextureStore', function() {
       store.markTile(tile);
       store.endFrame();
       store.addEventListener('textureLoad', function() {
-        store.addEventListener('textureUnload', function(event, eventTile) {
-          assert(event === 'textureUnload');
-          assert(eventTile === tile);
-          assert(!store.query(tile).hasAsset);
-          assert(!store.query(tile).hasTexture);
+        store.addEventListener('textureUnload', function(eventTile) {
+          assert.strictEqual(eventTile, tile);
+          assert.isFalse(store.query(tile).hasAsset);
+          assert.isFalse(store.query(tile).hasTexture);
           done();
         });
         store.startFrame();
@@ -259,8 +302,8 @@ suite('TextureStore', function() {
       store.endFrame();
       store.addEventListener('textureLoad', function() {
         var asset = store.asset(tile);
-        assert(asset instanceof MockAsset);
-        assert(asset.id === tile.id);
+        assert.instanceOf(asset, MockAsset);
+        assert.strictEqual(asset.id, tile.id);
         done();
       });
     });
@@ -273,8 +316,8 @@ suite('TextureStore', function() {
       store.endFrame();
       store.addEventListener('textureLoad', function() {
         var texture = store.texture(tile);
-        assert(texture instanceof MockTexture);
-        assert(texture.id === tile.id);
+        assert.instanceOf(texture, MockTexture);
+        assert.strictEqual(texture.id, tile.id);
         done();
       });
     });
@@ -291,7 +334,7 @@ suite('TextureStore', function() {
         store.endFrame();
         var asset = store.asset(tile);
         var texture = store.texture(tile);
-        assert(texture.refresh.calledWith(tile, asset));
+        assert.isTrue(texture.refresh.calledWithExactly(tile, asset));
         done();
       });
     });
@@ -307,7 +350,7 @@ suite('TextureStore', function() {
         store.markTile(tile);
         store.endFrame();
         var texture = store.texture(tile);
-        assert(texture.refresh.notCalled);
+        assert.isTrue(texture.refresh.notCalled);
         done();
       });
     });
@@ -321,9 +364,8 @@ suite('TextureStore', function() {
       store.markTile(tile);
       store.endFrame();
       store.addEventListener('textureLoad', function() {
-        store.addEventListener('textureInvalid', function(event, eventTile) {
-          assert(event === 'textureInvalid');
-          assert(eventTile === tile);
+        store.addEventListener('textureInvalid', function(eventTile) {
+          assert.strictEqual(eventTile, tile);
           done();
         });
         var asset = store.asset(tile);
@@ -343,7 +385,7 @@ suite('TextureStore', function() {
       store.endFrame();
       store.startFrame();
       store.endFrame();
-      assert.notOk(store.query(tile).previouslyVisible);
+      assert.isFalse(store.query(tile).previouslyVisible);
     });
 
     test('previously visible tile with a texture is kept', function(done) {
@@ -357,7 +399,7 @@ suite('TextureStore', function() {
       store.addEventListener('textureLoad', function() {
         store.startFrame();
         store.endFrame();
-        assert.ok(store.query(tile).previouslyVisible);
+        assert.isTrue(store.query(tile).previouslyVisible);
         done();
       });
     });
@@ -369,15 +411,15 @@ suite('TextureStore', function() {
       var tiles = [ new MockTile(), new MockTile(), new MockTile() ];
       var markAndWaitForLoad = function(i) {
         if (i === tiles.length) {
-          assert.notOk(store.query(tiles[0]).previouslyVisible);
-          assert.ok(store.query(tiles[1]).previouslyVisible);
+          assert.isFalse(store.query(tiles[0]).previouslyVisible);
+          assert.isTrue(store.query(tiles[1]).previouslyVisible);
           done();
         } else {
           var tile = tiles[i];
           store.startFrame();
           store.markTile(tile);
           store.endFrame();
-          store.addEventListener('textureLoad', function(event, loadedTile) {
+          store.addEventListener('textureLoad', function(loadedTile) {
             if (loadedTile === tile) {
               markAndWaitForLoad(i+1);
             }
@@ -398,24 +440,27 @@ suite('TextureStore', function() {
       for (i = 1; i <= 3; i++) {
         store.pin(tile);
         state = store.query(tile);
-        assert(state.pinned);
-        assert(state.pinCount === i);
+        assert.isTrue(state.pinned);
+        assert.strictEqual(state.pinCount, i);
       }
       for (i = 2; i >= 0; i--) {
         store.unpin(tile);
         state = store.query(tile);
-        assert(i > 0 ? state.pinned : !state.pinned);
-        assert(state.pinCount === i);
+        if (i > 0) {
+          assert.isTrue(state.pinned);
+        } else {
+          assert.isFalse(state.pinned);
+        }
+        assert.strictEqual(state.pinCount, i);
       }
     });
 
     test('pinning tile causes load', function(done) {
       var store = makeTextureStore();
       var tile = new MockTile();
-      store.addEventListener('textureLoad', function(event, eventTile) {
-        assert(event === 'textureLoad');
-        assert(eventTile === tile);
-        assert.ok(store.query(tile).pinned);
+      store.addEventListener('textureLoad', function(eventTile) {
+        assert.strictEqual(eventTile, tile);
+        assert.isTrue(store.query(tile).pinned);
         done();
       });
       store.pin(tile);
@@ -426,10 +471,9 @@ suite('TextureStore', function() {
       var tile = new MockTile();
       store.pin(tile);
       store.addEventListener('textureLoad', function() {
-        store.addEventListener('textureUnload', function(event, eventTile) {
-          assert(event === 'textureUnload');
-          assert(eventTile === tile);
-          assert.notOk(store.query(tile).pinned);
+        store.addEventListener('textureUnload', function(eventTile) {
+          assert.strictEqual(eventTile, tile);
+          assert.isFalse(store.query(tile).pinned);
           done();
         });
         store.unpin(tile);
@@ -445,7 +489,7 @@ suite('TextureStore', function() {
       store.addEventListener('textureLoad', function() {
         store.startFrame();
         store.endFrame();
-        assert(store.query(tile).hasTexture);
+        assert.isTrue(store.query(tile).hasTexture);
         done();
       });
     });
@@ -462,7 +506,7 @@ suite('TextureStore', function() {
         store.unpin(tile);
         store.startFrame();
         store.endFrame();
-        assert(!store.query(tile).hasTexture);
+        assert.isFalse(store.query(tile).hasTexture);
         done();
       });
     });

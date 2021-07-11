@@ -15,23 +15,25 @@
  */
 'use strict';
 
-var Dynamics = require('./Dynamics');
 var eventEmitter = require('minimal-event-emitter');
+var Dynamics = require('./Dynamics');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 /**
- * @class
- * @classdesc Set the velocity and friction of a single parameter by pressing
- * and unpressing a key.
- *
+ * @class KeyControlMethod
  * @implements ControlMethod
+ * @classdesc
  *
- * @param {Number} keyCode Key which activates the method when pressed
- * @param {String} parameter The parameter to be controlled (e.g. `x`, `y` or `zoom`)
- * @param {Number} velocity Velocity at which the parameter changes. Use a
+ * Sets the velocity and friction of a single parameter by pressing and
+ * unpressing a key.
+ *
+ * @param {number} keyCode Key which activates the method when pressed
+ * @param {string} parameter The parameter to be controlled (e.g. `x`, `y` or `zoom`)
+ * @param {number} velocity Velocity at which the parameter changes. Use a
  * negative number for opposite direction
- * @param {Number} friction Friction at which the parameter stops
+ * @param {number} friction Friction at which the parameter stops
  * @param {Element} [element=document] DOM element where the key events are listened to
-*/
+ */
 function KeyControlMethod(keyCode, parameter, velocity, friction, element) {
   if(!keyCode) {
     throw new Error("KeyControlMethod: keyCode must be defined");
@@ -60,7 +62,7 @@ function KeyControlMethod(keyCode, parameter, velocity, friction, element) {
 
   this._element.addEventListener('keydown', this._keydownHandler);
   this._element.addEventListener('keyup', this._keyupHandler);
-  window.addEventListener('blur',this._blurHandler);
+  window.addEventListener('blur', this._blurHandler);
 
   this._dynamics = new Dynamics();
   this._pressing = false;
@@ -68,12 +70,13 @@ function KeyControlMethod(keyCode, parameter, velocity, friction, element) {
 eventEmitter(KeyControlMethod);
 
 /**
-  Destroy the instance
-*/
+ * Destructor.
+ */
 KeyControlMethod.prototype.destroy = function() {
   this._element.removeEventListener('keydown', this._keydownHandler);
   this._element.removeEventListener('keyup', this._keyupHandler);
   window.removeEventListener('blur', this._blurHandler);
+  clearOwnProperties(this);
 };
 
 KeyControlMethod.prototype._handlePress = function(e) {

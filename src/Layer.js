@@ -18,16 +18,24 @@
 
 var eventEmitter = require('minimal-event-emitter');
 var extend = require('./util/extend');
-
+var clearOwnProperties = require('./util/clearOwnProperties');
 
 /**
- * @class
+ * Signals that the layer has been rendered.
+ *
+ * @param {boolean} stable Whether all tiles were successfully rendered without
+ *     missing textures or resorting to fallbacks.
+ * @event Layer#renderComplete
+ */
+
+/**
+ * @class Layer
  * @classdesc
+ *
  * A Layer is a combination of {@link Source}, {@link Geometry}, {@link View}
  * and {@link TextureStore} that may be added into a {@link Stage} and rendered
  * with {@link Effects}.
  *
- * @param {Stage} stage
  * @param {Source} source
  * @param {Geometry} geometry
  * @param {View} view
@@ -35,12 +43,11 @@ var extend = require('./util/extend');
  * @param {Object} opts
  * @param {Effects} opts.effects
 */
-function Layer(stage, source, geometry, view, textureStore, opts) {
+function Layer(source, geometry, view, textureStore, opts) {
   opts = opts || {};
 
   var self = this;
 
-  this._stage = stage;
   this._source = source;
   this._geometry = geometry;
   this._view = view;
@@ -82,24 +89,7 @@ Layer.prototype.destroy = function() {
     this._textureStoreChangeHandler);
   this._textureStore.removeEventListener('textureInvalid',
     this._textureStoreChangeHandler);
-  this._stage = null;
-  this._source = null;
-  this._geometry = null;
-  this._view = null;
-  this._textureStore = null;
-  this._fixedLevelIndex = null;
-  this._effects = null;
-  this._viewChangeHandler = null;
-  this._textureStoreChangeHandler = null;
-};
-
-
-/**
- * Returns the underlying {@link Stage stage}.
- * @return {Stage}
- */
-Layer.prototype.stage = function() {
-  return this._stage;
+  clearOwnProperties(this);
 };
 
 

@@ -17,68 +17,92 @@
 
 var eventEmitter = require('minimal-event-emitter');
 var WorkQueue = require('../collections/WorkQueue');
-var calcRect = require('../calcRect');
+var calcRect = require('../util/calcRect');
 var async = require('../util/async');
 var cancelize = require('../util/cancelize');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 var RendererRegistry = require('./RendererRegistry');
 
-
-// Time to wait before creating successive textures, in milliseconds.
-// We wait for at least one frame to be rendered between assets.
-// This improves performance significantly on older iOS devices.
-var createTextureDelay = 20;
-
+function forwardTileCmp(t1, t2) {
+  return t1.cmp(t2);
+}
 
 function reverseTileCmp(t1, t2) {
   return -t1.cmp(t2);
 }
 
 /**
+ * Signals that the stage has been rendered.
+ *
+ * @param {boolean} stable Whether all tiles were successfully rendered without
+ *     missing textures or resorting to fallbacks.
+ * @event Stage#renderComplete
+ */
+
+/**
  * Signals that the contents of the stage have been invalidated and must be
  * rendered again.
+ *
+ * This is used by the {@link RenderLoop} implementation.
+ *
  * @event Stage#renderInvalid
  */
 
 /**
- * @interface
- * @classdesc A Stage is a container with the ability to render a stack of
+ * @interface Stage
+ * @classdesc
+ *
+ * A Stage is a container with the ability to render a stack of
  * {@link Layer layers}.
  *
- * This is a superclass containing logic that is common to all implementations;
- * it should never be instantiated directly. Instead, use one of the
- * subclasses: {@link WebGlStage}, {@link CssStage} or {@link FlashStage}.
+ * This class should never be instantiated directly. Use {@link WebGlStage}
+ * instead.
+ *
+ * @param {Object} opts
+ * @param {boolean} [opts.progressive=false]
+ *
+ * Options listed here may be passed into the `opts` constructor argument of
+ * subclasses.
+ *
+ * The `progressive` option controls whether resolution levels are loaded in
+ * order, from lowest to highest. This results in a more pleasing effect when
+ * zooming past several levels in a large panoramas, but consumes additional
+ * bandwidth.
  */
 function Stage(opts) {
+  this._progressive = !!(opts && opts.progressive);
 
-  // Must be set by subclasses.
-  this._domElement = null;
-
+  // The list of layers in display order (background to foreground).
   this._layers = [];
+
+  // The list of renderers; the i-th renderer is for the i-th layer.
   this._renderers = [];
 
-  this._visibleTiles = [];
-  this._fallbackTiles = {
-    children: [],
-    parents: []
-  };
+  // The lists of tiles to load and render, populated during render().
+  this._tilesToLoad = [];
+  this._tilesToRender = [];
 
-  this._tmpTiles = [];
+  // Temporary tile lists.
+  this._tmpVisible = [];
+  this._tmpChildren = [];
 
   // Cached stage dimensions.
-  this._width = null;
-  this._height = null;
+  // Start with zero, which inhibits rendering until setSize() is called.
+  this._width = 0;
+  this._height = 0;
 
   // Temporary variable for rect.
-  this._rect = {};
+  this._tmpRect = {};
+
+  // Temporary variable for size.
+  this._tmpSize = {};
 
   // Work queue for createTexture.
-  this._createTextureWorkQueue = new WorkQueue({
-    delay: createTextureDelay
-  });
+  this._createTextureWorkQueue = new WorkQueue();
 
   // Function to emit event when render parameters have changed.
-  this.emitRenderInvalid = this.emitRenderInvalid.bind(this);
+  this._emitRenderInvalid = this._emitRenderInvalid.bind(this);
 
   // The renderer registry maps each geometry/view pair into the respective
   // Renderer class.
@@ -93,16 +117,7 @@ eventEmitter(Stage);
  */
 Stage.prototype.destroy = function() {
   this.removeAllLayers();
-  this._layers = null;
-  this._renderers = null;
-  this._visibleTiles = null;
-  this._fallbackTiles = null;
-  this._tmpTiles = null;
-  this._width = null;
-  this._height = null;
-  this._createTextureWorkQueue = null;
-  this.emitRenderInvalid = null;
-  this._rendererRegistry = null;
+  clearOwnProperties(this);
 };
 
 
@@ -125,10 +140,14 @@ Stage.prototype.registerRenderer = function(geometryType, viewType, Renderer) {
 
 
 /**
- * @return {HTMLElement} DOM element where layers are rendered
+ * Returns the underlying DOM element.
+ *
+ * Must be overridden by subclasses.
+ *
+ * @return {Element}
  */
 Stage.prototype.domElement = function() {
-  return this._domElement;
+  throw new Error('Stage implementation must override domElement');
 };
 
 
@@ -151,19 +170,16 @@ Stage.prototype.height = function() {
 
 
 /**
- * Get the stage dimensions. If an object argument is supplied, the object is
- * filled in with the result and returned. Otherwise, a fresh object is
- * returned.
+ * Get the stage dimensions. If an argument is supplied, it is filled in with
+ * the result and returned. Otherwise, a fresh object is filled in and returned.
  *
- * @param {Object} obj
- * @param {number} obj.width
- * @param {number} obj.height
+ * @param {Size=} size
  */
-Stage.prototype.size = function(obj) {
-  obj = obj || {};
-  obj.width = this._width;
-  obj.height = this._height;
-  return obj;
+Stage.prototype.size = function(size) {
+  size = size || {};
+  size.width = this._width;
+  size.height = this._height;
+  return size;
 };
 
 
@@ -171,26 +187,63 @@ Stage.prototype.size = function(obj) {
  * Set the stage dimensions.
  *
  * This contains the size update logic common to all stage types. Subclasses
- * define the _setSize() method to perform their own logic, if required.
+ * must define the {@link Stage#setSizeForType} method to perform their own
+ * logic.
  *
- * @param {Object} obj
- * @param {number} obj.width
- * @param {number} obj.height
- *
+ * @param {Size} size
  */
 Stage.prototype.setSize = function(size) {
   this._width = size.width;
   this._height = size.height;
 
-  this._setSize(); // must be defined by subclasses.
+  this.setSizeForType(); // must be defined by subclasses.
 
   this.emit('resize');
-  this.emitRenderInvalid();
+  this._emitRenderInvalid();
 };
 
 
-Stage.prototype.emitRenderInvalid = function() {
+/**
+ * Call {@link Stage#setSize} instead.
+ *
+ * This contains the size update logic specific to a stage type. It is called by
+ * {@link Stage#setSize} after the base class has been updated to reflect the
+ * new size, but before any events are emitted.
+ *
+ * @param {Size} size
+ */
+Stage.prototype.setSizeForType = function(size) {
+  throw new Error('Stage implementation must override setSizeForType');
+};
+
+
+/**
+ * Loads an {@link Asset} from an image.
+ * @param {string} url The image URL.
+ * @param {?Rect} rect A {@link Rect} describing a portion of the image, or null
+ *     to use the full image.
+ * @param {function(?Error, Asset)} done The callback.
+ * @return {function()} A function to cancel loading.
+ */
+Stage.prototype.loadImage = function() {
+  throw new Error('Stage implementation must override loadImage');
+};
+
+
+Stage.prototype._emitRenderInvalid = function() {
   this.emit('renderInvalid');
+};
+
+
+/**
+ * Verifies that the layer is valid for this stage, throwing an exception
+ * otherwise.
+ *
+ * @param {Layer} layer
+ * @throws {Error} If the layer is not valid for this stage.
+ */
+Stage.prototype.validateLayer = function(layer) {
+  throw new Error('Stage implementation must override validateLayer');
 };
 
 
@@ -236,18 +289,27 @@ Stage.prototype.addLayer = function(layer, i) {
     throw new Error('Invalid layer position');
   }
 
-  this._validateLayer(layer);
+  this.validateLayer(layer); // must be defined by subclasses.
+
+  var geometryType = layer.geometry().type;
+  var viewType = layer.view().type;
+  var rendererClass = this._rendererRegistry.get(geometryType, viewType);
+  if (!rendererClass) {
+    throw new Error('No ' + this.type + ' renderer avaiable for ' +
+        geometryType + ' geometry and ' + viewType + ' view');
+  }
+  var renderer = this.createRenderer(rendererClass);
 
   this._layers.splice(i, 0, layer);
-  this._renderers.splice(i, 0, null);
+  this._renderers.splice(i, 0, renderer);
 
   // Listeners for render invalid.
-  layer.addEventListener('viewChange', this.emitRenderInvalid);
-  layer.addEventListener('effectsChange', this.emitRenderInvalid);
-  layer.addEventListener('fixedLevelChange', this.emitRenderInvalid);
-  layer.addEventListener('textureStoreChange', this.emitRenderInvalid);
+  layer.addEventListener('viewChange', this._emitRenderInvalid);
+  layer.addEventListener('effectsChange', this._emitRenderInvalid);
+  layer.addEventListener('fixedLevelChange', this._emitRenderInvalid);
+  layer.addEventListener('textureStoreChange', this._emitRenderInvalid);
 
-  this.emitRenderInvalid();
+  this._emitRenderInvalid();
 };
 
 
@@ -275,7 +337,7 @@ Stage.prototype.moveLayer = function(layer, i) {
   this._layers.splice(i, 0, layer);
   this._renderers.splice(i, 0, renderer);
 
-  this.emitRenderInvalid();
+  this._emitRenderInvalid();
 };
 
 
@@ -293,17 +355,14 @@ Stage.prototype.removeLayer = function(layer) {
   var removedLayer = this._layers.splice(index, 1)[0];
   var renderer = this._renderers.splice(index, 1)[0];
 
-  // Renderer is created by _updateRenderer(), so it may not always exist.
-  if (renderer) {
-    this.destroyRenderer(renderer);
-  }
+  this.destroyRenderer(renderer);
 
-  removedLayer.removeEventListener('viewChange', this.emitRenderInvalid);
-  removedLayer.removeEventListener('effectsChange', this.emitRenderInvalid);
-  removedLayer.removeEventListener('fixedLevelChange', this.emitRenderInvalid);
-  removedLayer.removeEventListener('textureStoreChange', this.emitRenderInvalid);
+  removedLayer.removeEventListener('viewChange', this._emitRenderInvalid);
+  removedLayer.removeEventListener('effectsChange', this._emitRenderInvalid);
+  removedLayer.removeEventListener('fixedLevelChange', this._emitRenderInvalid);
+  removedLayer.removeEventListener('textureStoreChange', this._emitRenderInvalid);
 
-  this.emitRenderInvalid();
+  this._emitRenderInvalid();
 };
 
 
@@ -318,23 +377,46 @@ Stage.prototype.removeAllLayers = function() {
 
 
 /**
+ * Called before a frame is rendered.
+ *
+ * Must be overridden by subclasses.
+ */
+Stage.prototype.startFrame = function() {
+  throw new Error('Stage implementation must override startFrame');
+};
+
+
+/**
+ * Called after a frame is rendered.
+ *
+ * Must be overridden by subclasses.
+ */
+Stage.prototype.endFrame = function() {
+  throw new Error('Stage implementation must override endFrame');
+};
+
+
+/**
  * Render the current frame. Usually called from a {@link RenderLoop}.
  *
  * This contains the rendering logic common to all stage types. Subclasses
  * define the startFrame() and endFrame() methods to perform their own logic.
  */
 Stage.prototype.render = function() {
+  var i, j;
 
-  var i;
+  var tilesToLoad = this._tilesToLoad;
+  var tilesToRender = this._tilesToRender;
 
-  var visibleTiles = this._visibleTiles;
-  var fallbackTiles = this._fallbackTiles;
+  var stableStage = true;
+  var stableLayer;
 
   // Get the stage dimensions.
   var width = this._width;
   var height = this._height;
 
-  var rect = this._rect;
+  var rect = this._tmpRect;
+  var size = this._tmpSize;
 
   if (width <= 0 || height <= 0) {
     return;
@@ -352,55 +434,67 @@ Stage.prototype.render = function() {
     var layer = this._layers[i];
     var effects = layer.effects();
     var view = layer.view();
-    var renderer = this._updateRenderer(i);
-    var depth = this._layers.length - i;
     var textureStore = layer.textureStore();
+    var renderer = this._renderers[i];
+    var depth = this._layers.length - i;
+    var tile, texture;
 
-    // Update the view size.
+    // Convert the rect effect into a normalized rect.
     // TODO: avoid doing this on every frame.
     calcRect(width, height, effects && effects.rect, rect);
+
     if (rect.width <= 0 || rect.height <= 0) {
       // Skip rendering on a null viewport.
       continue;
     }
-    view.setSize(rect);
 
-    // Get the visible tiles for the current layer.
-    visibleTiles.length = 0;
-    layer.visibleTiles(visibleTiles);
+    // Update the view size.
+    size.width = rect.width * this._width;
+    size.height = rect.height * this._height;
+    view.setSize(size);
 
     // Signal start of layer to the renderer.
     renderer.startLayer(layer, rect);
 
-    // Because of the way in which WebGl blending works, children tiles which
-    // overlap with their parents must to be rendered before their parents for
-    // transparent layers to work properly.
+    // We render with both alpha blending and depth testing enabled. Thus, when
+    // rendering a subsequent pixel at the same location than an existing one,
+    // the subsequent pixel gets discarded unless it has smaller depth, and is
+    // otherwise composited with the existing pixel.
     //
-    // Once something is rendered, whenever something rendered after that
-    // fails the depth buffer test, it is discarded. We want the sections of
-    // tiles that are below their children to be discarded, so that we don't
-    // see both parent and child when a layer is transparent.
+    // When using fallback tiles to fill a gap in the preferred resolution
+    // level, we prefer higher resolution fallbacks to lower resolution ones.
+    // However, where fallbacks overlap, we want higher resolution ones to
+    // prevail, and we don't want multiple fallbacks to be composited with each
+    // other, as that would produce a bad result when semitransparent textures
+    // are involved.
     //
-    // Hence, children fallbacks must be rendered before parent fallbacks.
+    // In order to achieve this within the constraints of alpha blending and
+    // depth testing, the depth of a tile must be inversely proportional to its
+    // resolution, and higher-resolution tiles must be rendered before lower-
+    // resolution ones.
 
-    var parentFallbacks = fallbackTiles.parents;
-    var childrenFallbacks = fallbackTiles.children;
+    // Collect the lists of tiles to load and render.
+    stableLayer = this._collectTiles(layer, textureStore);
 
-    // Clear the fallback tile sets.
-    childrenFallbacks.length = 0;
-    parentFallbacks.length = 0;
+    // Mark all the tiles whose textures must be loaded.
+    // This will either trigger loading (for textures not yet loaded) or
+    // prevent unloading (for textures already loaded).
+    for (j = 0; j < tilesToLoad.length; j++) {
+      tile = tilesToLoad[j];
+      textureStore.markTile(tile);
+    }
 
-    // Render the visible tiles and collect fallback tiles.
-    this._renderTiles(visibleTiles, textureStore, renderer, layer, depth, true);
+    // Render tiles.
+    for (j = 0; j < tilesToRender.length; j++) {
+      tile = tilesToRender[j];
+      texture = textureStore.texture(tile);
+      renderer.renderTile(tile, texture, layer, depth);
+    }
 
-    // Render the fallback tiles.
-    this._renderTiles(childrenFallbacks, textureStore, renderer, layer, depth, false);
-
-    // Parent tiles have to be sorted to be drawn from front to back, so that
-    // higher level parents hide the sections of lower level parents behind
-    // them by virtue of depth testing.
-    parentFallbacks.sort(reverseTileCmp);
-    this._renderTiles(parentFallbacks, textureStore, renderer, layer, depth, false);
+    layer.emit('renderComplete', stableLayer);
+    if (!stableLayer) {
+      stableStage = false;
+    }
 
     // Signal end of layer to the renderer.
     renderer.endLayer(layer, rect);
@@ -413,129 +507,124 @@ Stage.prototype.render = function() {
 
   this.endFrame(); // defined by subclasses
 
+  this.emit('renderComplete', stableStage);
 };
 
+Stage.prototype._collectTiles = function(layer, textureStore) {
+  var tilesToLoad = this._tilesToLoad;
+  var tilesToRender = this._tilesToRender;
+  var tmpVisible = this._tmpVisible;
 
-Stage.prototype._updateRenderer = function(layerIndex) {
-  var layer = this._layers[layerIndex];
+  tilesToLoad.length = 0;
+  tilesToRender.length = 0;
+  tmpVisible.length = 0;
 
-  var stageType = this.type;
-  var geometryType = layer.geometry().type;
-  var viewType = layer.view().type;
+  layer.visibleTiles(tmpVisible);
 
-  var Renderer = this._rendererRegistry.get(geometryType, viewType);
-  if (!Renderer) {
-    throw new Error('No ' + stageType + ' renderer avaiable for ' + geometryType + ' geometry and ' + viewType + ' view');
-  }
+  var isStable = true;
 
-  var currentRenderer = this._renderers[layerIndex];
-
-  if (!currentRenderer) {
-    // If layer does not have a renderer, create it now.
-    this._renderers[layerIndex] = this.createRenderer(Renderer);
-  }
-  else if (!(currentRenderer instanceof Renderer)) {
-    // If the existing renderer is of the wrong type, replace it.
-    this._renderers[layerIndex] = this.createRenderer(Renderer);
-    this.destroyRenderer(currentRenderer);
-  }
-
-  return this._renderers[layerIndex];
-};
-
-
-Stage.prototype._renderTiles = function(tiles, textureStore, renderer, layer, depth, fallback) {
-  for (var tileIndex = 0; tileIndex < tiles.length; tileIndex++) {
-    var tile = tiles[tileIndex];
-
-    // Mark tile as visible in this frame. This forces a texture refresh.
-    textureStore.markTile(tile);
-
-    // If there is a texture for the tile, send the pair into the renderer.
-    // Otherwise, if we are collecting fallbacks, try to get one.
-    var texture = textureStore.texture(tile);
-    if (texture) {
-      renderer.renderTile(tile, texture, layer, depth, tileIndex);
-    } else if (fallback) {
-      this._fallback(tile, textureStore);
-    }
-  }
-};
-
-
-Stage.prototype._fallback = function(tile, textureStore) {
-  // Fallback to children if available, otherwise fall back to parent.
-  return (this._childrenFallback(tile, textureStore) ||
-          this._parentFallback(tile, textureStore));
-};
-
-
-Stage.prototype._parentFallback = function(tile, textureStore) {
-  var result = this._fallbackTiles.parents;
-  // Find the closest parent with a loaded texture.
-  while ((tile = tile.parent()) != null) {
-    if (tile && textureStore.texture(tile)) {
-      // Make sure we do not add duplicate tiles.
-      for (var i = 0; i < result.length; i++) {
-        if (tile.equals(result[i])) {
-          // Use the already present parent as a fallback.
-          return true;
-        }
-      }
-      // Use this parent as a fallback.
-      result.push(tile);
-      return true;
-    }
-  }
-
-  // No parent fallback available.
-  return false;
-};
-
-
-Stage.prototype._childrenFallback = function(tile, textureStore) {
-
-  // Recurse into children until a level with available textures is found.
-  // However, do not recurse any further when the number of children exceeds 1,
-  // event if we still haven't found a viable fallback; this prevents falling
-  // back on an exponential number of tiles.
-  //
-  // In practice, this means that equirectangular geometries (where there is
-  // a single tile per level) will fall back to any level, while cube/flat
-  // geometries (where the number of children typically, though not necessarily,
-  // doubles per level) will only fallback into the immediate next level.
-
-  var result = this._fallbackTiles.children;
-
-  var tmp = this._tmpTiles;
-  tmp.length = 0;
-
-  // If we are on the last level, there are no children to fall back to.
-  if (!tile.children(tmp)) {
-    return false;
-  }
-
-  // If tile has a single child with no texture, recurse into next level.
-  if (tmp.length === 1 && !textureStore.texture(tmp[0])) {
-    return this._childrenFallback(tmp[0], textureStore, result);
-  }
-
-  // Copy tiles into result set and check whether level is complete.
-  var incomplete = false;
-  for (var i = 0; i < tmp.length; i++) {
-    if (textureStore.texture(tmp[i])) {
-      result.push(tmp[i]);
+  for (var i = 0; i < tmpVisible.length; i++) {
+    var tile = tmpVisible[i];
+    var needsFallback;
+    this._collectTileToLoad(tile);
+    if (textureStore.texture(tile)) {
+      // The preferred texture is available.
+      // No fallback is required.
+      needsFallback = false;
+      this._collectTileToRender(tile);
     } else {
-      incomplete = true;
+      // The preferred texture is unavailable.
+      // Collect children for rendering as a fallback.
+      needsFallback = this._collectChildren(tile, textureStore);
+      isStable = false;
     }
+    // Collect all parents for loading, and the closest parent for rendering if
+    // a fallback is required.
+    this._collectParents(tile, textureStore, needsFallback);
   }
 
-  // If at least one child texture is not available, we still need
-  // the parent fallback. A false return value indicates this.
-  return !incomplete;
+  // Sort tiles to load in ascending resolution order.
+  tilesToLoad.sort(forwardTileCmp);
 
+  // Sort tiles to render in descending resolution order.
+  tilesToRender.sort(reverseTileCmp);
+
+  return isStable;
 };
 
+Stage.prototype._collectChildren = function(tile, textureStore) {
+  var tmpChildren = this._tmpChildren;
+
+  var needsFallback = true;
+
+  // Fall back as many levels as necessary on single-child geometries, but do
+  // not go beyond immediate children on multiple-child geometries, to avoid
+  // exploring an exponential number of tiles.
+  do {
+    tmpChildren.length = 0;
+    if (!tile.children(tmpChildren)) {
+      break;
+    }
+    needsFallback = false;
+    for (var i = 0; i < tmpChildren.length; i++) {
+      tile = tmpChildren[i];
+      if (textureStore.texture(tile)) {
+        this._collectTileToLoad(tile);
+        this._collectTileToRender(tile);
+      } else {
+        needsFallback = true;
+      }
+    }
+  } while (needsFallback && tmpChildren.length === 1)
+
+  return needsFallback;
+};
+
+Stage.prototype._collectParents = function(tile, textureStore, needsFallback) {
+  // Recursively visit parent tiles until:
+  //   - all parents have been marked for loading, if progressive rendering is
+  //     enabled; and
+  //   - at least one parent has been marked for both loading and rendering, if
+  //     a fallback is required.
+  var needsLoading = this._progressive;
+  while ((needsLoading || needsFallback) && (tile = tile.parent()) != null) {
+    if (needsFallback) {
+      if (textureStore.texture(tile)) {
+        this._collectTileToRender(tile);
+        needsFallback = false;
+      } else if (!this._progressive) {
+        continue;
+      }
+    }
+    if (!this._collectTileToLoad(tile)) {
+      needsLoading = false;
+    }
+  }
+  return needsFallback;
+};
+
+Stage.prototype._collectTileToLoad = function(tile) {
+  return this._collectTileIntoList(tile, this._tilesToLoad);
+};
+
+Stage.prototype._collectTileToRender = function(tile) {
+  return this._collectTileIntoList(tile, this._tilesToRender);
+};
+
+Stage.prototype._collectTileIntoList = function(tile, tileList) {
+  // TODO: Investigate whether it's worth it to make this better than O(n²).
+  var found = false;
+  for (var i = 0; i < tileList.length; i++) {
+    if (tile.equals(tileList[i])) {
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    tileList.push(tile);
+  }
+  return !found;
+};
 
 /**
  * Create a texture for the given tile and asset. Called by {@link TextureStore}.
@@ -560,14 +649,15 @@ Stage.prototype.createTexture = function(tile, asset, done) {
 };
 
 /**
- * Returns the stage type, used to determine the appropriate renderer for a
- * given geometry and view.
+ * The stage type, used to determine the appropriate renderer for a given
+ * geometry and view.
+ *
+ * The sole known value is `"webgl".
  *
  * See also {@link Stage#registerRenderer}.
  *
- * @function
+ * @property {string}
  * @name Stage#type
- * @returns {string}
  */
 
 module.exports = Stage;

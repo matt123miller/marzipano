@@ -15,10 +15,9 @@
  */
 'use strict';
 
-var assert = require('../../assert');
+var assert = require('chai').assert;
 
 var ControlComposer = require('../../../src/controls/Composer');
-var Dynamics = require('../../../src/controls/Dynamics');
 var eventEmitter = require('minimal-event-emitter');
 
 
@@ -34,15 +33,15 @@ suite('ControlComposer', function() {
   var method2 = null;
 
   // clock stub
-  var clockValue = null;
-  function advanceClock(v) { clockValue += v; }
-  var clock = function() { return clockValue; };
+  var nowValue = null;
+  function advanceClock(v) { nowValue += v; }
+  var now = function() { return nowValue; };
 
   // Initialize instances
   setup(function() {
-    clockValue = 0;
+    nowValue = 0;
 
-    composer = new ControlComposer({ clock: clock });
+    composer = new ControlComposer({nowForTesting: now});
     method = new MethodStub();
     method2 = new MethodStub();
 

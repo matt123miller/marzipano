@@ -15,15 +15,17 @@
  */
 'use strict';
 
+var eventEmitter = require('minimal-event-emitter');
 var Dynamics = require('./Dynamics');
 var HammerGestures = require('./HammerGestures');
-var eventEmitter = require('minimal-event-emitter');
+var clearOwnProperties = require('../util/clearOwnProperties');
 
 /**
- * @class
- * @classdesc Control the view fov/zoom by pinching with two fingers.
- *
+ * @class PinchZoomControlMethod
  * @implements ControlMethod
+ * @classdesc
+ *
+ * Control the view fov/zoom by pinching with two fingers.
  *
  * @param {Element} element Element to listen for events.
  * @param {string} pointerType Which Hammer.js pointer type to use
@@ -47,15 +49,11 @@ function PinchZoomControlMethod(element, pointerType, opts) {
 eventEmitter(PinchZoomControlMethod);
 
 /**
- * Destroy the instance
+ * Destructor.
  */
 PinchZoomControlMethod.prototype.destroy = function() {
   this._hammer.release();
-
-  this._hammer = null;
-  this._lastEvent = null;
-  this._active = null;
-  this._dynamics = null;
+  clearOwnProperties(this);
 };
 
 

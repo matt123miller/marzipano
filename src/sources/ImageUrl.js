@@ -20,7 +20,7 @@ var NetworkError = require('../NetworkError');
 var WorkPool = require('../collections/WorkPool');
 var chain = require('../util/chain');
 var delay = require('../util/delay');
-var clock = require('../util/clock');
+var now = require('../util/now');
 
 
 // Map template properties to their corresponding tile properties.
@@ -42,9 +42,13 @@ var defaultRetryDelay = 10000;
 
 
 /**
- * @class
- * @classdesc Source that loads images given a URL and a crop rectangle.
+ * @class ImageUrlSource
  * @implements Source
+ * @classdesc
+ *
+ * A {@link Source} that loads {@link Asset assets} from images given a URL and
+ * a crop rectangle.
+ *
  * @param {Function} sourceFromTile Function that receives a tile and returns
  * a `{ url, rect }` object, where `url` is an image URL and `rect`, when
  * present, is an `{ x, y, width, height }` object in normalized coordinates
@@ -93,8 +97,8 @@ ImageUrlSource.prototype.loadAsset = function(stage, tile, done) {
       if (err) {
         if (err instanceof NetworkError) {
           // If a network error occurred, wait before retrying.
-          retryMap[url] = clock();
-          self.emit('networkError', asset, err);
+          retryMap[url] = now();
+          self.emit('networkError', err, tile);
         }
         done(err, tile);
       } else {
@@ -109,8 +113,8 @@ ImageUrlSource.prototype.loadAsset = function(stage, tile, done) {
   var delayAmount;
   var lastTime = retryMap[url];
   if (lastTime != null) {
-    var now = clock();
-    var elapsed = now - lastTime;
+    var currentTime = now();
+    var elapsed = currentTime - lastTime;
     if (elapsed < retryDelay) {
       // Wait before retrying.
       delayAmount = retryDelay - elapsed;

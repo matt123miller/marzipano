@@ -24,9 +24,11 @@ var type = require('../util/type');
 
 
 /**
- * @class
+ * @class EquirectTile
  * @implements Tile
- * @classdesc A tile in an @{EquirectGeometry}.
+ * @classdesc
+ *
+ * A tile in an @{EquirectGeometry}.
  */
 function EquirectTile(z, geometry) {
   this.z = z;
@@ -65,78 +67,8 @@ EquirectTile.prototype.scaleY = function() {
 };
 
 
-EquirectTile.prototype.width = function() {
-  return this._level.tileWidth();
-};
-
-
-EquirectTile.prototype.height = function() {
-  return this._level.tileHeight();
-};
-
-
-EquirectTile.prototype.levelWidth = function() {
-  return this._level.width();
-};
-
-
-EquirectTile.prototype.levelHeight = function() {
-  return this._level.height();
-};
-
-
-EquirectTile.prototype.atTopLevel = function() {
-  return this.z === 0;
-};
-
-
-EquirectTile.prototype.atBottomLevel = function() {
-  return this.z === this._geometry.levelList.length - 1;
-};
-
-
-EquirectTile.prototype.atTopEdge = function() {
-  return true;
-};
-
-
-EquirectTile.prototype.atBottomEdge = function() {
-  return true;
-};
-
-
-EquirectTile.prototype.atLeftEdge = function() {
-  return true;
-};
-
-
-EquirectTile.prototype.atRightEdge = function() {
-  return true;
-};
-
-
-EquirectTile.prototype.padTop = function() {
-  return false;
-};
-
-
-EquirectTile.prototype.padBottom = function() {
-  return false;
-};
-
-
-EquirectTile.prototype.padLeft = function() {
-  return false;
-};
-
-
-EquirectTile.prototype.padRight = function() {
-  return false;
-};
-
-
 EquirectTile.prototype.parent = function() {
-  if (this.atTopLevel()) {
+  if (this.z === 0) {
     return null;
   }
   return new EquirectTile(this.z - 1, this._geometry);
@@ -144,7 +76,7 @@ EquirectTile.prototype.parent = function() {
 
 
 EquirectTile.prototype.children = function(result) {
-  if (this.atBottomLevel()) {
+  if (this.z === this._geometry.levelList.length - 1) {
     return null;
   }
   result = result || [];
@@ -159,41 +91,21 @@ EquirectTile.prototype.neighbors = function() {
 
 
 EquirectTile.prototype.hash = function() {
-  return EquirectTile.hash(this);
+  return hash(this.z);
 };
 
 
-EquirectTile.prototype.equals = function(other) {
-  return EquirectTile.equals(this, other);
+EquirectTile.prototype.equals = function(that) {
+  return this._geometry === that._geometry && this.z === that.z;
 };
 
 
-EquirectTile.prototype.cmp = function(other) {
-  return EquirectTile.cmp(this, other);
+EquirectTile.prototype.cmp = function(that) {
+  return cmp(this.z, that.z);
 };
 
 
 EquirectTile.prototype.str = function() {
-  return EquirectTile.str(this);
-};
-
-
-EquirectTile.hash = function(tile) {
-  return hash(tile.z);
-};
-
-
-EquirectTile.equals = function(tile1, tile2) {
-  return tile1.z === tile2.z;
-};
-
-
-EquirectTile.cmp = function(tile1, tile2) {
-  return cmp(tile1.z, tile2.z);
-};
-
-
-EquirectTile.str = function(tile) {
   return 'EquirectTile(' + tile.z + ')';
 };
 
@@ -227,10 +139,12 @@ EquirectLevel.prototype.tileHeight = function() {
 
 
 /**
- * @class
+ * @class EquirectGeometry
  * @implements Geometry
- * @classdesc A @{Geometry} implementation suitable for equirectangular images
- *            with a 2:1 aspect ratio.
+ * @classdesc
+ *
+ * A {@link Geometry} implementation suitable for equirectangular images with a
+ * 2:1 aspect ratio.
  *
  * @param {Object[]} levelPropertiesList Level description
  * @param {number} levelPropertiesList[].width Level width in pixels
@@ -271,7 +185,7 @@ EquirectGeometry.prototype.visibleTiles = function(view, level, result) {
 };
 
 
-EquirectGeometry.TileClass = EquirectGeometry.prototype.TileClass = EquirectTile;
+EquirectGeometry.Tile = EquirectGeometry.prototype.Tile = EquirectTile;
 EquirectGeometry.type = EquirectGeometry.prototype.type = 'equirect';
 EquirectTile.type = EquirectTile.prototype.type = 'equirect';
 

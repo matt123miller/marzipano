@@ -13,21 +13,17 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+'use strict';
+
 module.exports = {
 
   // Stages.
   WebGlStage: require('./stages/WebGl'),
-  CssStage: require('./stages/Css'),
-  FlashStage: require('./stages/Flash'),
 
   // Renderers.
   WebGlCubeRenderer: require('./renderers/WebGlCube'),
   WebGlFlatRenderer: require('./renderers/WebGlFlat'),
   WebGlEquirectRenderer: require('./renderers/WebGlEquirect'),
-  CssCubeRenderer: require('./renderers/CssCube'),
-  CssFlatRenderer: require('./renderers/CssFlat'),
-  FlashCubeRenderer: require('./renderers/FlashCube'),
-  FlashFlatRenderer: require('./renderers/FlashFlat'),
   registerDefaultRenderers: require('./renderers/registerDefaultRenderers'),
 
   // Geometries.
@@ -44,8 +40,8 @@ module.exports = {
   SingleAssetSource: require('./sources/SingleAsset'),
 
   // Assets.
-  DynamicCanvasAsset: require('./assets/DynamicCanvas'),
-  StaticCanvasAsset: require('./assets/StaticCanvas'),
+  StaticAsset: require('./assets/Static'),
+  DynamicAsset: require('./assets/Dynamic'),
 
   // Texture store.
   TextureStore: require('./TextureStore'),
@@ -88,7 +84,7 @@ module.exports = {
     cancelize: require('./util/cancelize'),
     chain: require('./util/chain'),
     clamp: require('./util/clamp'),
-    clock: require('./util/clock'),
+    clearOwnProperties: require('./util/clearOwnProperties'),
     cmp: require('./util/cmp'),
     compose: require('./util/compose'),
     convertFov: require('./util/convertFov'),
@@ -103,6 +99,7 @@ module.exports = {
     inherits: require('./util/inherits'),
     mod: require('./util/mod'),
     noop: require('./util/noop'),
+    now: require('./util/now'),
     once: require('./util/once'),
     pixelRatio: require('./util/pixelRatio'),
     radToDeg: require('./util/radToDeg'),

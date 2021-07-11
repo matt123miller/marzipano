@@ -15,22 +15,15 @@
  */
 'use strict';
 
-// Detect WebGl support.
-// Keep stages/WebGl.js in sync with this.
-function checkWebGlSupported() {
-  var canvas = document.createElement('canvas');
-  var gl = canvas.getContext && (canvas.getContext('webgl') ||
-                                 canvas.getContext('experimental-webgl'));
-  return !!gl;
-}
-
-// Cache result.
-var supported;
-function webGlSupported() {
-  if (supported !== undefined) {
-    return supported;
+function getNow() {
+  if (typeof performance !== 'undefined' && performance.now) {
+    return function performanceNow() {
+      return performance.now();
+    };
   }
-  return (supported = checkWebGlSupported());
+  return function dateNow() {
+    return Date.now();
+  };
 }
 
-module.exports = webGlSupported;
+module.exports = getNow();
